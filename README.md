@@ -17,14 +17,15 @@ no GitHub Pages.
 
 ## Executar no computador
 
-É necessário ter o Node.js 22 instalado.
+É necessário usar Node.js 22.13 ou superior dentro da série 22, ou Node.js 24
+ou superior. A série 23 não é suportada.
 
 ```bash
 npm install
 npm run dev
 ```
 
-Depois, abra `http://localhost:3000`.
+Depois, abra `http://localhost:5173`.
 
 ## Publicar gratuitamente
 
@@ -37,4 +38,3 @@ na branch `main`.
 Esta versão é uma demonstração estática. Integrações reais com Instagram,
 Facebook, TikTok ou LinkedIn exigiriam APIs oficiais, autenticação e um serviço
 de backend.
-
