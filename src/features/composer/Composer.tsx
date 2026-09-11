@@ -2,20 +2,32 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import { ChannelBadge } from "../../components/ChannelBadge";
 import { channelCodes, channelMeta } from "../../data/mockData";
-import type { ChannelCode, Post } from "../../types/social";
+import type { CreatePostInput } from "../../data/posts/PostsRepository";
+import { localScheduleToIso } from "../../domain/scheduling";
+import type { ChannelCode } from "../../types/social";
 
 type ComposerProps = {
+  isLoadingPosts: boolean;
+  isSubmitting: boolean;
   onClose: () => void;
-  onSchedule: (post: Post) => void;
+  onDraftChange: () => void;
+  onSchedule: (post: CreatePostInput) => Promise<void> | void;
 };
 
-export function Composer({ onClose, onSchedule }: ComposerProps) {
+export function Composer({
+  isLoadingPosts,
+  isSubmitting,
+  onClose,
+  onDraftChange,
+  onSchedule,
+}: ComposerProps) {
   const [caption, setCaption] = useState("");
   const [date, setDate] = useState("2026-08-13");
   const [time, setTime] = useState("10:00");
   const [selected, setSelected] = useState<ChannelCode[]>(["IG", "FB"]);
 
   const toggleChannel = (code: ChannelCode) => {
+    onDraftChange();
     setSelected((current) =>
       current.includes(code)
         ? current.filter((item) => item !== code)
@@ -23,23 +35,33 @@ export function Composer({ onClose, onSchedule }: ComposerProps) {
     );
   };
 
+  const changeCaption = (value: string) => {
+    onDraftChange();
+    setCaption(value);
+  };
+
+  const changeDate = (value: string) => {
+    onDraftChange();
+    setDate(value);
+  };
+
+  const changeTime = (value: string) => {
+    onDraftChange();
+    setTime(value);
+  };
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!caption.trim() || selected.length === 0) return;
+    const scheduledAt = localScheduleToIso(date, time);
+    if (!caption.trim() || selected.length === 0 || scheduledAt === null) {
+      return;
+    }
 
     onSchedule({
-      id: Date.now(),
       title:
         caption.trim().split(/[.!?]/)[0].slice(0, 38) || "Nova publicação",
       caption: caption.trim(),
-      date: new Intl.DateTimeFormat("pt-BR", {
-        day: "2-digit",
-        month: "short",
-        timeZone: "UTC",
-      })
-        .format(new Date(date + "T12:00:00Z"))
-        .replace(".", ""),
-      time,
+      scheduledAt,
       channels: selected,
       status: "Agendado",
       color: "purple",
@@ -65,10 +87,10 @@ export function Composer({ onClose, onSchedule }: ComposerProps) {
                 ))}
               </div>
             </div>
-            <label className="field-label">Legenda<textarea value={caption} onChange={(event) => setCaption(event.target.value)} placeholder="Conte a história por trás desta publicação..." maxLength={500} required /><small>{caption.length}/500</small></label>
+            <label className="field-label">Legenda<textarea value={caption} onChange={(event) => changeCaption(event.target.value)} placeholder="Conte a história por trás desta publicação..." maxLength={500} required /><small>{caption.length}/500</small></label>
             <div className="date-fields">
-              <label className="field-label">Data<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
-              <label className="field-label">Horário<input type="time" value={time} onChange={(event) => setTime(event.target.value)} /></label>
+              <label className="field-label">Data<input type="date" value={date} onChange={(event) => changeDate(event.target.value)} required /></label>
+              <label className="field-label">Horário<input type="time" value={time} onChange={(event) => changeTime(event.target.value)} required /></label>
             </div>
             <div className="best-time"><span>✦</span><div><strong>Sugestão inteligente</strong><p>10:00 tem 18% mais engajamento às quintas-feiras.</p></div></div>
           </div>
@@ -82,7 +104,28 @@ export function Composer({ onClose, onSchedule }: ComposerProps) {
             </div>
           </div>
         </div>
-        <div className="modal-footer"><button className="secondary-button" onClick={onClose} type="button">Salvar rascunho</button><button className="primary-button" type="submit">▦ Agendar publicação</button></div>
+        <div className="modal-footer">
+          <button
+            className="secondary-button"
+            onClick={onClose}
+            type="button"
+          >
+            Salvar rascunho
+          </button>
+          <button
+            aria-busy={isSubmitting}
+            aria-label="Agendar publicação"
+            className="primary-button"
+            disabled={isLoadingPosts || isSubmitting}
+            type="submit"
+          >
+            {isSubmitting
+              ? "▦ Agendando publicação..."
+              : isLoadingPosts
+                ? "▦ Carregando publicações..."
+                : "▦ Agendar publicação"}
+          </button>
+        </div>
       </form>
     </div>
   );

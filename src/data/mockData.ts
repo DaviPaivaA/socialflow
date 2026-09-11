@@ -26,8 +26,7 @@ export const initialPosts: Post[] = [
     title: "Bastidores da torra",
     caption:
       "Cada grão conta uma história. Hoje mostramos um pouco do cuidado por trás do nosso café especial. ☕",
-    date: "Hoje",
-    time: "14:30",
+    scheduledAt: "2099-08-12T14:30:00-03:00",
     channels: ["IG", "FB"],
     status: "Agendado",
     color: "coral",
@@ -37,8 +36,7 @@ export const initialPosts: Post[] = [
     title: "Dica da semana",
     caption:
       "Três ajustes simples para deixar o café de casa ainda mais saboroso.",
-    date: "Amanhã",
-    time: "09:00",
+    scheduledAt: "2099-08-13T09:00:00-03:00",
     channels: ["IG", "TT"],
     status: "Agendado",
     color: "purple",
@@ -48,8 +46,7 @@ export const initialPosts: Post[] = [
     title: "Nossa equipe",
     caption:
       "Gente que acredita em encontros, boas conversas e café de verdade.",
-    date: "14 ago",
-    time: "18:00",
+    scheduledAt: "2099-08-14T18:00:00-03:00",
     channels: ["LI", "FB"],
     status: "Rascunho",
     color: "blue",
@@ -59,8 +56,7 @@ export const initialPosts: Post[] = [
     title: "Novo menu de inverno",
     caption:
       "O frio chegou por aqui com novas combinações para aquecer o dia.",
-    date: "10 ago",
-    time: "11:30",
+    scheduledAt: "2099-08-10T11:30:00-03:00",
     channels: ["IG", "FB", "TT"],
     status: "Publicado",
     color: "green",

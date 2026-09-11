@@ -306,6 +306,7 @@ button { cursor: pointer; }
 .modal-footer { padding: 15px 25px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); }
 .toast { position: fixed; right: 25px; bottom: 25px; z-index: 120; min-width: 260px; padding: 14px 18px; display: flex; align-items: center; gap: 10px; border-radius: 12px; color: #fff; background: #28253b; box-shadow: 0 18px 50px rgba(20,18,38,.3); font-size: 11px; }
 .toast span { width: 21px; height: 21px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: var(--green); }
+.toast--error span { background: var(--coral); }
 
 @media (max-width: 1120px) {
   .hero-grid, .content-grid { grid-template-columns: 1fr; }

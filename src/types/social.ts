@@ -14,8 +14,7 @@ export type Post = {
   id: number;
   title: string;
   caption: string;
-  date: string;
-  time: string;
+  scheduledAt: string;
   channels: ChannelCode[];
   status: PostStatus;
   color: ContentColor;

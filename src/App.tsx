@@ -1,70 +1,376 @@
-import { useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  HashRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router";
+import type { Location } from "react-router";
 import { Toast } from "./components/Toast";
-import { initialPosts, titles } from "./data/mockData";
+import type { ToastVariant } from "./components/Toast";
+import { titles } from "./data/mockData";
+import { createConfiguredPostsRepository } from "./data/posts/createPostsRepository";
+import type {
+  CreatePostInput,
+  PostsRepository,
+} from "./data/posts/PostsRepository";
+import {
+  getScheduledTimestamp,
+  selectNextScheduledPost,
+} from "./domain/scheduling";
 import { Composer } from "./features/composer/Composer";
 import { MainLayout } from "./layout/MainLayout";
 import { Agenda } from "./pages/Agenda";
 import { Analytics } from "./pages/Analytics";
 import { Channels } from "./pages/Channels";
+import { NotFound } from "./pages/NotFound";
 import { Overview } from "./pages/Overview";
 import { Posts } from "./pages/Posts";
+import type { PostsLoadState } from "./pages/Posts";
 import { Settings } from "./pages/Settings";
+import { getNavKey, notFoundTitle, routePaths } from "./routing/routes";
 import type { NavKey, Post } from "./types/social";
 
-export default function Home() {
-  const [active, setActive] = useState<NavKey>("overview");
-  const [posts, setPosts] = useState(initialPosts);
-  const [composerOpen, setComposerOpen] = useState(false);
-  const [toast, setToast] = useState("");
-  const [mobileNav, setMobileNav] = useState(false);
+type AppProps = {
+  repository?: PostsRepository;
+};
 
-  const current = useMemo(() => titles[active], [active]);
+type RoutedAppProps = {
+  repository: PostsRepository;
+};
+
+type ListRequest = {
+  repository: PostsRepository;
+};
+
+type PostsLoadResult =
+  | {
+      generation: number;
+      posts: Post[];
+      request: ListRequest;
+      state: "success";
+    }
+  | {
+      generation: number;
+      request: ListRequest;
+      state: "error";
+    };
+
+type ToastNotification = {
+  id: number;
+  message: string;
+  variant: ToastVariant;
+};
+
+const MAX_TIMER_DELAY = 2_147_483_647;
+
+const pendingListRequests = new WeakMap<
+  PostsRepository,
+  Promise<Post[]>
+>();
+
+function getPendingListRequest(repository: PostsRepository): Promise<Post[]> {
+  const pendingRequest = pendingListRequests.get(repository);
+  if (pendingRequest) return pendingRequest;
+
+  const request = repository.list();
+  pendingListRequests.set(repository, request);
+
+  const clearPendingRequest = () => {
+    if (pendingListRequests.get(repository) === request) {
+      pendingListRequests.delete(repository);
+    }
+  };
+
+  void request.then(clearPendingRequest, clearPendingRequest);
+  return request;
+}
+
+function reconcilePosts(
+  loadedPosts: Post[],
+  createdPosts: readonly Post[],
+): Post[] {
+  const seenIds = new Set<number>();
+
+  return [...createdPosts, ...loadedPosts].filter((post) => {
+    if (seenIds.has(post.id)) return false;
+
+    seenIds.add(post.id);
+    return true;
+  });
+}
+
+function RoutedApp({ repository }: RoutedAppProps) {
+  const location = useLocation();
+  const routerNavigate = useNavigate();
+  const listRequest = useMemo<ListRequest>(() => ({ repository }), [repository]);
+  const [createdPosts, setCreatedPosts] = useState<Post[]>([]);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [toast, setToast] = useState<ToastNotification | null>(null);
+  const [mobileNavLocation, setMobileNavLocation] = useState<Location | null>(
+    null,
+  );
+  const [postsLoadResult, setPostsLoadResult] =
+    useState<PostsLoadResult | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [scheduleNow, setScheduleNow] = useState(() => Date.now());
+  const submissionInFlightRef = useRef(false);
+  const composerSessionVersionRef = useRef(0);
+  const composerDraftRevisionRef = useRef(0);
+  const listGenerationRef = useRef(0);
+  const activeListGenerationRef = useRef(0);
+  const toastIdRef = useRef(0);
+  const toastTimeoutRef = useRef<number | null>(null);
+  const postsLoadState: PostsLoadState =
+    postsLoadResult?.request === listRequest
+      ? postsLoadResult.state
+      : "loading";
+  const isLoadingPosts = postsLoadState === "loading";
+  const listedPosts =
+    postsLoadResult?.request === listRequest &&
+    postsLoadResult.state === "success"
+      ? postsLoadResult.posts
+      : [];
+  const posts =
+    postsLoadState === "loading"
+      ? []
+      : reconcilePosts(listedPosts, createdPosts);
+  const active = getNavKey(location);
+  const current = active === null ? notFoundTitle : titles[active];
+  const nextPost =
+    postsLoadState === "success"
+      ? selectNextScheduledPost(posts, scheduleNow)
+      : undefined;
+  const mobileNavOpen = mobileNavLocation === location;
+
+  const showToast = useCallback(
+    (message: string, variant: ToastVariant) => {
+      const id = toastIdRef.current + 1;
+      toastIdRef.current = id;
+
+      if (toastTimeoutRef.current !== null) {
+        window.clearTimeout(toastTimeoutRef.current);
+      }
+
+      setToast({ id, message, variant });
+      toastTimeoutRef.current = window.setTimeout(() => {
+        setToast((currentToast) =>
+          currentToast?.id === id ? null : currentToast,
+        );
+        if (toastIdRef.current === id) toastTimeoutRef.current = null;
+      }, 3500);
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    let cancelled = false;
+    const generation = listGenerationRef.current + 1;
+    listGenerationRef.current = generation;
+    activeListGenerationRef.current = generation;
+
+    getPendingListRequest(listRequest.repository)
+      .then((loadedPosts) => {
+        if (
+          cancelled ||
+          activeListGenerationRef.current !== generation
+        ) {
+          return;
+        }
+
+        setScheduleNow(Date.now());
+        setPostsLoadResult({
+          generation,
+          posts: loadedPosts,
+          request: listRequest,
+          state: "success",
+        });
+      })
+      .catch(() => {
+        if (
+          !cancelled &&
+          activeListGenerationRef.current === generation
+        ) {
+          showToast("Não foi possível carregar as publicações.", "error");
+          setPostsLoadResult({
+            generation,
+            request: listRequest,
+            state: "error",
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [listRequest, showToast]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current !== null) {
+        window.clearTimeout(toastTimeoutRef.current);
+        toastTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!nextPost) return;
+
+    const scheduledTimestamp = getScheduledTimestamp(nextPost.scheduledAt);
+    if (scheduledTimestamp === null) return;
+
+    const delay = Math.min(
+      Math.max(scheduledTimestamp - Date.now(), 0),
+      MAX_TIMER_DELAY,
+    );
+    const timeout = window.setTimeout(() => {
+      setScheduleNow(Date.now());
+    }, delay);
+
+    return () => window.clearTimeout(timeout);
+  }, [nextPost, scheduleNow]);
 
   const navigate = (view: NavKey) => {
-    setActive(view);
-    setMobileNav(false);
+    routerNavigate(routePaths[view]);
+    setMobileNavLocation(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const schedulePost = (post: Post) => {
-    setPosts((currentPosts) => [post, ...currentPosts]);
-    setComposerOpen(false);
-    setToast("Publicação agendada com sucesso!");
-    setTimeout(() => setToast(""), 3500);
+  const openComposer = () => {
+    composerSessionVersionRef.current += 1;
+    setComposerOpen(true);
   };
 
-  const openComposer = () => setComposerOpen(true);
+  const closeComposer = () => {
+    composerSessionVersionRef.current += 1;
+    setComposerOpen(false);
+  };
+
+  const reviseComposerDraft = () => {
+    composerDraftRevisionRef.current += 1;
+  };
+
+  const schedulePost = async (input: CreatePostInput) => {
+    if (isLoadingPosts || submissionInFlightRef.current) {
+      return;
+    }
+
+    const submittedPayload = {
+      ...input,
+      channels: [...input.channels],
+    };
+    const submittedComposerSession = composerSessionVersionRef.current;
+    const submittedDraftRevision = composerDraftRevisionRef.current;
+    submissionInFlightRef.current = true;
+    setIsSubmitting(true);
+
+    try {
+      const post = await repository.create(submittedPayload);
+      setScheduleNow(Date.now());
+      setCreatedPosts((currentPosts) => [
+        post,
+        ...currentPosts.filter((currentPost) => currentPost.id !== post.id),
+      ]);
+      if (
+        composerSessionVersionRef.current === submittedComposerSession &&
+        composerDraftRevisionRef.current === submittedDraftRevision
+      ) {
+        closeComposer();
+      }
+      showToast("Publicação agendada com sucesso!", "success");
+    } catch {
+      showToast("Não foi possível agendar a publicação.", "error");
+    } finally {
+      submissionInFlightRef.current = false;
+      setIsSubmitting(false);
+    }
+  };
 
   return (
     <MainLayout
       active={active}
-      mobileNavOpen={mobileNav}
+      mobileNavOpen={mobileNavOpen}
       overlays={
         <>
           {composerOpen && (
             <Composer
-              onClose={() => setComposerOpen(false)}
+              isLoadingPosts={isLoadingPosts}
+              isSubmitting={isSubmitting}
+              onClose={closeComposer}
+              onDraftChange={reviseComposerDraft}
               onSchedule={schedulePost}
             />
           )}
-          {toast && <Toast message={toast} />}
+          {toast && (
+            <Toast message={toast.message} variant={toast.variant} />
+          )}
         </>
       }
       pageTitle={current}
       onCompose={openComposer}
       onNavigate={navigate}
-      onToggleMenu={() => setMobileNav((open) => !open)}
+      onToggleMenu={() =>
+        setMobileNavLocation((openLocation) =>
+          openLocation === location ? null : location,
+        )
+      }
     >
-      {active === "overview" && (
-        <Overview posts={posts} onCompose={openComposer} goTo={navigate} />
-      )}
-      {active === "agenda" && <Agenda onCompose={openComposer} />}
-      {active === "posts" && (
-        <Posts posts={posts} onCompose={openComposer} />
-      )}
-      {active === "analytics" && <Analytics />}
-      {active === "channels" && <Channels />}
-      {active === "settings" && <Settings />}
+      <Routes>
+        <Route
+          path={routePaths.overview}
+          element={
+            <Overview
+              goTo={navigate}
+              loadState={postsLoadState}
+              nextPost={nextPost}
+              onCompose={openComposer}
+            />
+          }
+        />
+        <Route
+          path={routePaths.agenda}
+          element={<Agenda onCompose={openComposer} />}
+        />
+        <Route
+          path={routePaths.posts}
+          element={
+            <Posts
+              loadState={postsLoadState}
+              posts={posts}
+              onCompose={openComposer}
+            />
+          }
+        />
+        <Route path={routePaths.analytics} element={<Analytics />} />
+        <Route path={routePaths.channels} element={<Channels />} />
+        <Route path={routePaths.settings} element={<Settings />} />
+        <Route
+          path="*"
+          element={<NotFound onGoHome={() => navigate("overview")} />}
+        />
+      </Routes>
     </MainLayout>
+  );
+}
+
+export default function App({ repository }: AppProps) {
+  const resolvedRepository = useMemo(
+    () => repository ?? createConfiguredPostsRepository(),
+    [repository],
+  );
+
+  return (
+    <HashRouter>
+      <RoutedApp repository={resolvedRepository} />
+    </HashRouter>
   );
 }
