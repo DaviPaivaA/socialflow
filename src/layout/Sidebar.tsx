@@ -2,7 +2,7 @@ import { navItems } from "../data/mockData";
 import type { NavKey } from "../types/social";
 
 type SidebarProps = {
-  active: NavKey;
+  active: NavKey | null;
   mobileOpen: boolean;
   onCompose: () => void;
   onNavigate: (view: NavKey) => void;

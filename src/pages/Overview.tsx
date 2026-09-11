@@ -2,15 +2,27 @@ import { ChannelBadge } from "../components/ChannelBadge";
 import { MetricCard } from "../components/MetricCard";
 import { WeekCalendar } from "../components/WeekCalendar";
 import { overviewMetrics } from "../data/mockData";
+import {
+  formatScheduledDate,
+  formatScheduledTime,
+  isScheduledToday,
+} from "../domain/scheduling";
+import type { PostsLoadState } from "./Posts";
 import type { NavKey, Post } from "../types/social";
 
 type OverviewProps = {
-  posts: Post[];
-  onCompose: () => void;
   goTo: (view: NavKey) => void;
+  loadState: PostsLoadState;
+  nextPost?: Post;
+  onCompose: () => void;
 };
 
-export function Overview({ posts, onCompose, goTo }: OverviewProps) {
+export function Overview({
+  goTo,
+  loadState,
+  nextPost,
+  onCompose,
+}: OverviewProps) {
   return (
     <>
       <section className="hero-grid">
@@ -35,25 +47,51 @@ export function Overview({ posts, onCompose, goTo }: OverviewProps) {
           <div className="orbit orbit-two" />
         </article>
 
-        <article className="next-post-card">
-          <div className="card-heading">
-            <div>
-              <span>PRÓXIMA PUBLICAÇÃO</span>
-              <h3>Hoje, 14:30</h3>
+        {loadState === "success" && nextPost ? (
+          <article className="next-post-card">
+            <div className="card-heading">
+              <div>
+                <span>PRÓXIMA PUBLICAÇÃO</span>
+                <h3>
+                  {isScheduledToday(nextPost.scheduledAt)
+                    ? "Hoje"
+                    : formatScheduledDate(nextPost.scheduledAt)}
+                  , {formatScheduledTime(nextPost.scheduledAt)}
+                </h3>
+              </div>
+              <div className="channel-stack">
+                {nextPost.channels.map((code) => (
+                  <ChannelBadge code={code} key={code} small />
+                ))}
+              </div>
             </div>
-            <div className="channel-stack"><ChannelBadge code="IG" small /><ChannelBadge code="FB" small /></div>
-          </div>
-          <div className="next-post-preview">
-            <div className="preview-art coral-art"><span>☕</span></div>
-            <div>
-              <strong>{posts[0]?.title}</strong>
-              <p>{posts[0]?.caption}</p>
-              <button onClick={() => goTo("posts")} type="button">Ver detalhes →</button>
+            <div className="next-post-preview">
+              <div className="preview-art coral-art"><span>☕</span></div>
+              <div>
+                <strong>{nextPost.title}</strong>
+                <p>{nextPost.caption}</p>
+                <button onClick={() => goTo("posts")} type="button">Ver detalhes →</button>
+              </div>
             </div>
-          </div>
-          <div className="progress-row"><span>Fila de hoje</span><b>2 de 3</b></div>
-          <div className="progress-track"><i /></div>
-        </article>
+            <div className="progress-row"><span>Fila de hoje</span><b>2 de 3</b></div>
+            <div className="progress-track"><i /></div>
+          </article>
+        ) : (
+          <article aria-live="polite" className="next-post-card">
+            <div className="card-heading">
+              <div>
+                <span>PUBLICAÇÕES</span>
+                <h3>
+                  {loadState === "loading"
+                    ? "Carregando publicações"
+                    : loadState === "error"
+                      ? "Não foi possível carregar as publicações"
+                      : "Nenhuma publicação agendada"}
+                </h3>
+              </div>
+            </div>
+          </article>
+        )}
       </section>
 
       <section className="metrics-grid" aria-label="Resumo de desempenho">

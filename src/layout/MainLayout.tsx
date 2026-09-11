@@ -4,7 +4,7 @@ import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 
 type MainLayoutProps = {
-  active: NavKey;
+  active: NavKey | null;
   children: ReactNode;
   mobileNavOpen: boolean;
   overlays: ReactNode;
@@ -43,15 +43,17 @@ export function MainLayout({
               <h1>{pageTitle.title}</h1>
               <p>{pageTitle.description}</p>
             </div>
-            {active !== "overview" && active !== "settings" && (
-              <button
-                className="primary-button desktop-action"
-                onClick={onCompose}
-                type="button"
-              >
-                ＋ Criar publicação
-              </button>
-            )}
+            {active !== null &&
+              active !== "overview" &&
+              active !== "settings" && (
+                <button
+                  className="primary-button desktop-action"
+                  onClick={onCompose}
+                  type="button"
+                >
+                  ＋ Criar publicação
+                </button>
+              )}
           </header>
 
           {children}
