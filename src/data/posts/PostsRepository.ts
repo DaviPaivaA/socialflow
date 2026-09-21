@@ -1,3 +1,10 @@
+import type { Post } from "../../types/social";
+
+export type CreatePostInput = {
+  caption: string;
+  scheduledFor: string;
+  status: "scheduled";
+  title?: string;
 import type {
   ChannelCode,
   ContentColor,

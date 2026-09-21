@@ -1,5 +1,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
+import type { CreatePostInput } from "../../data/posts/PostsRepository";
+import { localScheduleToIso } from "../../domain/scheduling";
 import { ChannelBadge } from "../../components/ChannelBadge";
 import { channelCodes, channelMeta } from "../../data/mockData";
 import type { CreatePostInput } from "../../data/posts/PostsRepository";
@@ -24,8 +26,20 @@ export function Composer({
   const [caption, setCaption] = useState("");
   const [date, setDate] = useState("2026-08-13");
   const [time, setTime] = useState("10:00");
-  const [selected, setSelected] = useState<ChannelCode[]>(["IG", "FB"]);
 
+  const changeCaption = (value: string) => {
+    onDraftChange();
+    setCaption(value);
+  };
+
+  const changeDate = (value: string) => {
+    onDraftChange();
+    setDate(value);
+  };
+
+  const changeTime = (value: string) => {
+    onDraftChange();
+    setTime(value);
   const toggleChannel = (code: ChannelCode) => {
     onDraftChange();
     setSelected((current) =>
@@ -52,6 +66,8 @@ export function Composer({
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    const scheduledFor = localScheduleToIso(date, time);
+    if (!caption.trim() || scheduledFor === null) {
     const scheduledAt = localScheduleToIso(date, time);
     if (!caption.trim() || selected.length === 0 || scheduledAt === null) {
       return;
@@ -61,6 +77,8 @@ export function Composer({
       title:
         caption.trim().split(/[.!?]/)[0].slice(0, 38) || "Nova publicação",
       caption: caption.trim(),
+      scheduledFor,
+      status: "scheduled",
       scheduledAt,
       channels: selected,
       status: "Agendado",

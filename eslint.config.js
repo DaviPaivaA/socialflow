@@ -6,7 +6,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default defineConfig([
-  globalIgnores(["dist"]),
+  globalIgnores(["dist", "dist-server"]),
   {
     files: ["src/**/*.{ts,tsx}"],
     extends: [
@@ -24,7 +24,15 @@ export default defineConfig([
     },
   },
   {
-    files: ["*.config.ts"],
+    files: ["server/**/*.ts", "shared/**/*.ts"],
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals.node,
+    },
+  },
+  {
+    files: ["*.config.ts", "server/*.config.ts"],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
       ecmaVersion: 2022,

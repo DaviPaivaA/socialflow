@@ -2,7 +2,6 @@ import type {
   CalendarDay,
   ChannelCode,
   ChannelDetails,
-  ConnectedChannel,
   Metric,
   NavItem,
   NavKey,
@@ -20,48 +19,80 @@ export const navItems: NavItem[] = [
   { key: "settings", label: "Configurações", icon: "⚙" },
 ];
 
-export const initialPosts: Post[] = [
+export const initialPosts = [
   {
-    id: 1,
+    id: "00000000-0000-4000-8000-000000000001",
+    tenantId: "11111111-1111-4111-8111-111111111111",
+    authorUserId: "22222222-2222-4222-8222-222222222222",
+    ragRunId: null,
     title: "Bastidores da torra",
     caption:
       "Cada grão conta uma história. Hoje mostramos um pouco do cuidado por trás do nosso café especial. ☕",
+    status: "scheduled",
+    scheduledFor: "2099-08-12T14:30:00-03:00",
+    publishedAt: null,
+    createdAt: "2099-01-01T00:00:00.000Z",
+    updatedAt: "2099-01-01T00:00:00.000Z",
     scheduledAt: "2099-08-12T14:30:00-03:00",
     channels: ["IG", "FB"],
     status: "Agendado",
     color: "coral",
   },
   {
-    id: 2,
+    id: "00000000-0000-4000-8000-000000000002",
+    tenantId: "11111111-1111-4111-8111-111111111111",
+    authorUserId: "22222222-2222-4222-8222-222222222222",
+    ragRunId: null,
     title: "Dica da semana",
     caption:
       "Três ajustes simples para deixar o café de casa ainda mais saboroso.",
+    status: "scheduled",
+    scheduledFor: "2099-08-13T09:00:00-03:00",
+    publishedAt: null,
+    createdAt: "2099-01-01T00:00:00.000Z",
+    updatedAt: "2099-01-01T00:00:00.000Z",
     scheduledAt: "2099-08-13T09:00:00-03:00",
     channels: ["IG", "TT"],
     status: "Agendado",
     color: "purple",
   },
   {
-    id: 3,
+    id: "00000000-0000-4000-8000-000000000003",
+    tenantId: "11111111-1111-4111-8111-111111111111",
+    authorUserId: "22222222-2222-4222-8222-222222222222",
+    ragRunId: null,
     title: "Nossa equipe",
     caption:
       "Gente que acredita em encontros, boas conversas e café de verdade.",
+    status: "draft",
+    scheduledFor: "2099-08-14T18:00:00-03:00",
+    publishedAt: null,
+    createdAt: "2099-01-01T00:00:00.000Z",
+    updatedAt: "2099-01-01T00:00:00.000Z",
     scheduledAt: "2099-08-14T18:00:00-03:00",
     channels: ["LI", "FB"],
     status: "Rascunho",
     color: "blue",
   },
   {
-    id: 4,
+    id: "00000000-0000-4000-8000-000000000004",
+    tenantId: "11111111-1111-4111-8111-111111111111",
+    authorUserId: "22222222-2222-4222-8222-222222222222",
+    ragRunId: null,
     title: "Novo menu de inverno",
     caption:
       "O frio chegou por aqui com novas combinações para aquecer o dia.",
+    status: "published",
+    scheduledFor: "2099-08-10T11:30:00-03:00",
+    publishedAt: "2099-08-10T14:30:00.000Z",
+    createdAt: "2099-01-01T00:00:00.000Z",
+    updatedAt: "2099-08-10T14:30:00.000Z",
     scheduledAt: "2099-08-10T11:30:00-03:00",
     channels: ["IG", "FB", "TT"],
     status: "Publicado",
     color: "green",
   },
-];
+] satisfies Post[];
 
 export const channelCodes: ChannelCode[] = ["IG", "FB", "TT", "LI"];
 
@@ -208,33 +239,6 @@ export const analyticsMetrics: Metric[] = [
 
 export const analyticsBars = [
   38, 52, 46, 72, 64, 88, 76, 96, 81, 100, 92, 118,
-];
-
-export const connectedChannels: ConnectedChannel[] = [
-  {
-    code: "IG",
-    user: "@cafeaurora",
-    followers: "18,4 mil",
-    status: "Conectado",
-  },
-  {
-    code: "FB",
-    user: "Café Aurora",
-    followers: "8,7 mil",
-    status: "Conectado",
-  },
-  {
-    code: "TT",
-    user: "@cafeaurora",
-    followers: "12,1 mil",
-    status: "Conectado",
-  },
-  {
-    code: "LI",
-    user: "Café Aurora",
-    followers: "3,2 mil",
-    status: "Conectado",
-  },
 ];
 
 export const settingPreferences: SettingPreference[] = [

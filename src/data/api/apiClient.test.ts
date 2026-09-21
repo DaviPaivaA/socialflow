@@ -22,6 +22,7 @@ describe("ApiClient", () => {
       "https://api.socialflow.example/v1/posts",
     );
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ credentials: "include", method: "GET" }),
       expect.objectContaining({ method: "GET" }),
     );
   });

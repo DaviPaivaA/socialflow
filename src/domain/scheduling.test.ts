@@ -3,11 +3,33 @@ import type { Post } from "../types/social";
 import {
   formatScheduledDate,
   formatScheduledTime,
+  isValidScheduledFor,
   isValidScheduledAt,
   localScheduleToIso,
   selectNextScheduledPost,
 } from "./scheduling";
 
+function uuid(value: number): string {
+  return `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
+}
+
+function postAt(
+  id: number,
+  scheduledFor: string | null,
+  status: Post["status"] = "scheduled",
+): Post {
+  return {
+    authorUserId: "22222222-2222-4222-8222-222222222222",
+    caption: `Conteúdo ${id}`,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    id: uuid(id),
+    publishedAt: null,
+    ragRunId: null,
+    scheduledFor,
+    status,
+    tenantId: "11111111-1111-4111-8111-111111111111",
+    title: `Publicação ${id}`,
+    updatedAt: "2026-01-01T00:00:00.000Z",
 function postAt(
   id: number,
   scheduledAt: string,
@@ -51,6 +73,20 @@ describe("agendamento", () => {
   });
 
   it("valida timestamps completos sem normalizar datas impossíveis", () => {
+    expect(isValidScheduledFor("2028-02-29T10:00:00.000Z")).toBe(true);
+    expect(isValidScheduledFor("2026-08-13T10:00:00-03:00")).toBe(true);
+
+    expect(isValidScheduledFor("2026-02-30T10:00:00.000Z")).toBe(false);
+    expect(isValidScheduledFor("08-13T10:00:00.000Z")).toBe(false);
+    expect(isValidScheduledFor("2026-08-13T10:00:00")).toBe(false);
+    expect(isValidScheduledFor("2026-08-13")).toBe(false);
+  });
+
+  it("formata o mesmo instante no calendário e horário locais", () => {
+    const scheduledFor = new Date(2026, 7, 13, 10, 5).toISOString();
+
+    expect(formatScheduledDate(scheduledFor)).toBe("13 ago");
+    expect(formatScheduledTime(scheduledFor)).toBe("10:05");
     expect(isValidScheduledAt("2028-02-29T10:00:00.000Z")).toBe(true);
     expect(isValidScheduledAt("2026-08-13T10:00:00-03:00")).toBe(true);
 
@@ -73,11 +109,13 @@ describe("agendamento", () => {
       postAt(4, "2026-08-13T15:00:00.000Z"),
       postAt(1, "2026-08-13T11:59:59.000Z"),
       postAt(2, "2026-08-13T12:30:00.000Z"),
+      postAt(3, "2026-08-13T12:10:00.000Z", "draft"),
       postAt(3, "2026-08-13T12:10:00.000Z", "Rascunho"),
       postAt(5, "2026-08-13T12:20:00.000Z"),
     ];
     const originalOrder = posts.map((post) => post.id);
 
+    expect(selectNextScheduledPost(posts, now)?.id).toBe(uuid(5));
     expect(selectNextScheduledPost(posts, now)?.id).toBe(5);
     expect(posts.map((post) => post.id)).toEqual(originalOrder);
   });
@@ -89,6 +127,10 @@ describe("agendamento", () => {
 
     expect(
       selectNextScheduledPost([laterByInstant, earlierAcrossYear], now)?.id,
+    ).toBe(uuid(2));
+  });
+
+  it("desempata o mesmo instante pelo menor UUID", () => {
     ).toBe(2);
   });
 
@@ -101,6 +143,7 @@ describe("agendamento", () => {
         [postAt(9, sameInstant), postAt(3, sameInstant)],
         now,
       )?.id,
+    ).toBe(uuid(3));
     ).toBe(3);
   });
 
@@ -112,6 +155,9 @@ describe("agendamento", () => {
         [
           postAt(1, "2026-08-13T12:00:00.000Z"),
           postAt(2, "2026-08-13T11:00:00.000Z"),
+          postAt(3, "2026-08-13T13:00:00.000Z", "published"),
+          postAt(4, "sem-data"),
+          postAt(5, null),
           postAt(3, "2026-08-13T13:00:00.000Z", "Publicado"),
           postAt(4, "sem-data"),
         ],

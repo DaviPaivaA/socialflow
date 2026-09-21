@@ -7,7 +7,6 @@ export type NavKey =
   | "settings";
 
 export type ChannelCode = "IG" | "FB" | "TT" | "LI";
-export type PostStatus = "Agendado" | "Rascunho" | "Publicado";
 export type ContentColor = "coral" | "purple" | "blue" | "green";
 
 export type Post = {
@@ -58,14 +57,8 @@ export type CalendarDay = {
   items: CalendarItem[];
 };
 
-export type ConnectedChannel = {
-  code: ChannelCode;
-  user: string;
-  followers: string;
-  status: string;
-};
-
 export type SettingPreference = {
   title: string;
   description: string;
 };
+export type { Post, PostStatus } from "../../shared/postContract";

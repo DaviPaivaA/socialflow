@@ -1,19 +1,57 @@
 import { navItems } from "../data/mockData";
+import type {
+  AuthTenant,
+  AuthUser,
+  AuthWorkspace,
+} from "../../shared/authContract";
 import type { NavKey } from "../types/social";
 
 type SidebarProps = {
   active: NavKey | null;
+  currentTenant: AuthTenant;
+  currentUser: AuthUser;
+  isLoadingWorkspaces: boolean;
+  isSwitchingWorkspace: boolean;
   mobileOpen: boolean;
   onCompose: () => void;
+  onLogout: () => Promise<void> | void;
   onNavigate: (view: NavKey) => void;
+  onSelectWorkspace: (tenantId: string) => Promise<void> | void;
+  workspaceError: string | null;
+  workspaces: AuthWorkspace[];
 };
+
+function initials(value: string): string {
+  return value
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+const roleLabels = {
+  admin: "Administrador",
+  member: "Membro",
+  owner: "Proprietário",
+} as const;
 
 export function Sidebar({
   active,
+  currentTenant,
+  currentUser,
+  isLoadingWorkspaces,
+  isSwitchingWorkspace,
   mobileOpen,
   onCompose,
+  onLogout,
   onNavigate,
+  onSelectWorkspace,
+  workspaceError,
+  workspaces,
 }: SidebarProps) {
+  const hasMultipleWorkspaces = workspaces.length > 1;
+
   return (
     <aside className={"sidebar " + (mobileOpen ? "mobile-open" : "")}>
       <div className="brand">
@@ -27,14 +65,38 @@ export function Sidebar({
         </strong>
       </div>
       <div className="workspace-switch">
-        <div className="avatar">CA</div>
+        <div className="avatar">{initials(currentTenant.name)}</div>
         <div>
-          <span>ESPAÇO DE TRABALHO</span>
-          <strong>Café Aurora</strong>
+          <span>WORKSPACE</span>
+          {hasMultipleWorkspaces ? (
+            <select
+              aria-busy={isSwitchingWorkspace}
+              aria-label="Workspace ativo"
+              disabled={isLoadingWorkspaces || isSwitchingWorkspace}
+              onChange={(event) => {
+                void onSelectWorkspace(event.target.value);
+              }}
+              value={currentTenant.id}
+            >
+              {workspaces.map((workspace) => (
+                <option key={workspace.tenantId} value={workspace.tenantId}>
+                  {workspace.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <strong>{currentTenant.name}</strong>
+          )}
+          {isLoadingWorkspaces && !isSwitchingWorkspace && (
+            <small aria-live="polite">Carregando...</small>
+          )}
+          {isSwitchingWorkspace && <small role="status">Trocando...</small>}
+          {workspaceError && (
+            <small className="workspace-error" role="alert">
+              {workspaceError}
+            </small>
+          )}
         </div>
-        <button aria-label="Trocar área de trabalho" type="button">
-          ⌄
-        </button>
       </div>
       <nav aria-label="Navegação principal">
         <span className="nav-label">MENU</span>
@@ -60,13 +122,13 @@ export function Sidebar({
         </button>
       </div>
       <div className="sidebar-user">
-        <div className="avatar user">DA</div>
+        <div className="avatar user">{initials(currentUser.displayName)}</div>
         <div>
-          <strong>Davi Alvares</strong>
-          <span>Plano acadêmico</span>
+          <strong>{currentUser.displayName}</strong>
+          <span>{roleLabels[currentTenant.role]}</span>
         </div>
-        <button aria-label="Opções do perfil" type="button">
-          •••
+        <button aria-label="Sair" onClick={onLogout} type="button">
+          Sair
         </button>
       </div>
     </aside>

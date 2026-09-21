@@ -1,3 +1,9 @@
+import { isPost } from "../../../shared/postContract";
+import { isValidScheduledFor } from "../../domain/scheduling";
+import type { Post } from "../../types/social";
+import type { ApiClient } from "../api/apiClient";
+import type { CreatePostInput, PostsRepository } from "./PostsRepository";
+
 import type { ApiClient } from "../api/apiClient";
 import { isValidScheduledAt } from "../../domain/scheduling";
 import type { Post } from "../../types/social";
@@ -44,6 +50,7 @@ export class HttpPostsRepository implements PostsRepository {
   }
 
   async create(post: CreatePostInput): Promise<Post> {
+    if (!isValidScheduledFor(post.scheduledFor)) {
     if (!isValidScheduledAt(post.scheduledAt)) {
       throw new Error(
         "A publicação não possui um agendamento ISO 8601 válido.",

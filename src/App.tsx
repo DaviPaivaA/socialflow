@@ -6,6 +6,10 @@ import {
   useRef,
   useState,
 } from "react";
+import type { ReactNode } from "react";
+import {
+  HashRouter,
+  Navigate,
 import {
   HashRouter,
   Route,
@@ -14,6 +18,14 @@ import {
   useNavigate,
 } from "react-router";
 import type { Location } from "react-router";
+import type { AuthSession } from "../shared/authContract";
+import { AuthProvider } from "./auth/AuthContext";
+import { useAuth } from "./auth/useAuth";
+import { Toast } from "./components/Toast";
+import type { ToastVariant } from "./components/Toast";
+import { titles } from "./data/mockData";
+import { createConfiguredAppServices } from "./data/createAppServices";
+import type { AuthRepository } from "./data/auth/AuthRepository";
 import { Toast } from "./components/Toast";
 import type { ToastVariant } from "./components/Toast";
 import { titles } from "./data/mockData";
@@ -22,6 +34,7 @@ import type {
   CreatePostInput,
   PostsRepository,
 } from "./data/posts/PostsRepository";
+import type { SocialAccountsRepository } from "./data/socialAccounts/SocialAccountsRepository";
 import {
   getScheduledTimestamp,
   selectNextScheduledPost,
@@ -32,6 +45,11 @@ import { Agenda } from "./pages/Agenda";
 import { Analytics } from "./pages/Analytics";
 import { Channels } from "./pages/Channels";
 import { NotFound } from "./pages/NotFound";
+import { Login } from "./pages/Login";
+import { Overview } from "./pages/Overview";
+import { Posts } from "./pages/Posts";
+import type { PostsLoadState } from "./pages/Posts";
+import { Register } from "./pages/Register";
 import { Overview } from "./pages/Overview";
 import { Posts } from "./pages/Posts";
 import type { PostsLoadState } from "./pages/Posts";
@@ -40,15 +58,22 @@ import { getNavKey, notFoundTitle, routePaths } from "./routing/routes";
 import type { NavKey, Post } from "./types/social";
 
 type AppProps = {
+  authRepository?: AuthRepository;
+  initialAuthSession?: AuthSession | null;
+  repository?: PostsRepository;
+  socialAccountsRepository?: SocialAccountsRepository;
   repository?: PostsRepository;
 };
 
 type RoutedAppProps = {
   repository: PostsRepository;
+  socialAccountsRepository: SocialAccountsRepository;
+  workspaceId: string;
 };
 
 type ListRequest = {
   repository: PostsRepository;
+  workspaceId: string;
 };
 
 type PostsLoadResult =
@@ -74,6 +99,29 @@ const MAX_TIMER_DELAY = 2_147_483_647;
 
 const pendingListRequests = new WeakMap<
   PostsRepository,
+  Map<string, Promise<Post[]>>
+>();
+
+function getPendingListRequest(
+  repository: PostsRepository,
+  workspaceId: string,
+): Promise<Post[]> {
+  let requests = pendingListRequests.get(repository);
+  if (!requests) {
+    requests = new Map();
+    pendingListRequests.set(repository, requests);
+  }
+  const pendingRequest = requests.get(workspaceId);
+  if (pendingRequest) return pendingRequest;
+
+  const request = repository.list();
+  requests.set(workspaceId, request);
+
+  const clearPendingRequest = () => {
+    if (requests?.get(workspaceId) === request) {
+      requests.delete(workspaceId);
+    }
+    if (requests?.size === 0) {
   Promise<Post[]>
 >();
 
@@ -98,6 +146,7 @@ function reconcilePosts(
   loadedPosts: Post[],
   createdPosts: readonly Post[],
 ): Post[] {
+  const seenIds = new Set<string>();
   const seenIds = new Set<number>();
 
   return [...createdPosts, ...loadedPosts].filter((post) => {
@@ -108,6 +157,26 @@ function reconcilePosts(
   });
 }
 
+function RoutedApp({
+  repository,
+  socialAccountsRepository,
+  workspaceId,
+}: RoutedAppProps) {
+  const {
+    isLoadingWorkspaces,
+    isSwitchingWorkspace,
+    logout,
+    selectWorkspace,
+    session,
+    workspaceError,
+    workspaces,
+  } = useAuth();
+  const location = useLocation();
+  const routerNavigate = useNavigate();
+  const listRequest = useMemo<ListRequest>(
+    () => ({ repository, workspaceId }),
+    [repository, workspaceId],
+  );
 function RoutedApp({ repository }: RoutedAppProps) {
   const location = useLocation();
   const routerNavigate = useNavigate();
@@ -123,6 +192,7 @@ function RoutedApp({ repository }: RoutedAppProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [scheduleNow, setScheduleNow] = useState(() => Date.now());
   const submissionInFlightRef = useRef(false);
+  const logoutInFlightRef = useRef(false);
   const composerSessionVersionRef = useRef(0);
   const composerDraftRevisionRef = useRef(0);
   const listGenerationRef = useRef(0);
@@ -144,6 +214,13 @@ function RoutedApp({ repository }: RoutedAppProps) {
       ? []
       : reconcilePosts(listedPosts, createdPosts);
   const active = getNavKey(location);
+  const firstName = session?.user.displayName.trim().split(/\s+/)[0] || "";
+  const current =
+    active === null
+      ? notFoundTitle
+      : active === "overview" && firstName
+        ? { ...titles.overview, title: `Olá, ${firstName}! 👋` }
+        : titles[active];
   const current = active === null ? notFoundTitle : titles[active];
   const nextPost =
     postsLoadState === "success"
@@ -177,6 +254,7 @@ function RoutedApp({ repository }: RoutedAppProps) {
     listGenerationRef.current = generation;
     activeListGenerationRef.current = generation;
 
+    getPendingListRequest(listRequest.repository, listRequest.workspaceId)
     getPendingListRequest(listRequest.repository)
       .then((loadedPosts) => {
         if (
@@ -185,6 +263,29 @@ function RoutedApp({ repository }: RoutedAppProps) {
         ) {
           return;
         }
+
+        setScheduleNow(Date.now());
+        setPostsLoadResult({
+          generation,
+          posts: loadedPosts,
+          request: listRequest,
+          state: "success",
+        });
+      })
+      .catch(() => {
+        if (
+          !cancelled &&
+          activeListGenerationRef.current === generation
+        ) {
+          showToast("Não foi possível carregar as publicações.", "error");
+          setPostsLoadResult({
+            generation,
+            request: listRequest,
+            state: "error",
+          });
+        }
+      });
+
 
         setScheduleNow(Date.now());
         setPostsLoadResult({
@@ -225,6 +326,7 @@ function RoutedApp({ repository }: RoutedAppProps) {
   useEffect(() => {
     if (!nextPost) return;
 
+    const scheduledTimestamp = getScheduledTimestamp(nextPost.scheduledFor);
     const scheduledTimestamp = getScheduledTimestamp(nextPost.scheduledAt);
     if (scheduledTimestamp === null) return;
 
@@ -264,6 +366,7 @@ function RoutedApp({ repository }: RoutedAppProps) {
       return;
     }
 
+    const submittedPayload = { ...input };
     const submittedPayload = {
       ...input,
       channels: [...input.channels],
@@ -295,9 +398,28 @@ function RoutedApp({ repository }: RoutedAppProps) {
     }
   };
 
+  const signOut = async () => {
+    if (logoutInFlightRef.current) return;
+    logoutInFlightRef.current = true;
+    try {
+      await logout();
+      routerNavigate("/login", { replace: true });
+    } catch {
+      showToast("Não foi possível sair. Tente novamente.", "error");
+    } finally {
+      logoutInFlightRef.current = false;
+    }
+  };
+
+  if (!session) return null;
+
   return (
     <MainLayout
       active={active}
+      currentTenant={session.tenant}
+      currentUser={session.user}
+      isLoadingWorkspaces={isLoadingWorkspaces}
+      isSwitchingWorkspace={isSwitchingWorkspace}
       mobileNavOpen={mobileNavOpen}
       overlays={
         <>
@@ -317,12 +439,16 @@ function RoutedApp({ repository }: RoutedAppProps) {
       }
       pageTitle={current}
       onCompose={openComposer}
+      onLogout={signOut}
       onNavigate={navigate}
+      onSelectWorkspace={selectWorkspace}
       onToggleMenu={() =>
         setMobileNavLocation((openLocation) =>
           openLocation === location ? null : location,
         )
       }
+      workspaceError={workspaceError}
+      workspaces={workspaces}
     >
       <Routes>
         <Route
@@ -351,6 +477,15 @@ function RoutedApp({ repository }: RoutedAppProps) {
           }
         />
         <Route path={routePaths.analytics} element={<Analytics />} />
+        <Route
+          path={routePaths.channels}
+          element={
+            <Channels
+              repository={socialAccountsRepository}
+              workspaceId={workspaceId}
+            />
+          }
+        />
         <Route path={routePaths.channels} element={<Channels />} />
         <Route path={routePaths.settings} element={<Settings />} />
         <Route
@@ -362,6 +497,120 @@ function RoutedApp({ repository }: RoutedAppProps) {
   );
 }
 
+function SessionLoading() {
+  return (
+    <main className="auth-shell">
+      <section className="auth-card auth-loading" role="status">
+        <strong>SocialFlow</strong>
+        <p>Verificando sessão...</p>
+      </section>
+    </main>
+  );
+}
+
+function RequireAuth({ children }: { children: ReactNode }) {
+  const { isLoading, session } = useAuth();
+  const location = useLocation();
+  if (isLoading) return <SessionLoading />;
+  if (!session) {
+    return (
+      <Navigate
+        replace
+        state={{ from: location.pathname }}
+        to="/login"
+      />
+    );
+  }
+  return children;
+}
+
+function PublicOnly({ children }: { children: ReactNode }) {
+  const { isLoading, session } = useAuth();
+  const location = useLocation();
+  if (isLoading) return <SessionLoading />;
+  const requestedPath = (location.state as { from?: unknown } | null)?.from;
+  const destination =
+    typeof requestedPath === "string" && /^\/(?!\/)/.test(requestedPath)
+      ? requestedPath
+      : "/";
+  return session ? <Navigate replace to={destination} /> : children;
+}
+
+function AuthenticatedApplication({
+  repository,
+  socialAccountsRepository,
+}: Pick<RoutedAppProps, "repository" | "socialAccountsRepository">) {
+  const { session } = useAuth();
+  if (!session) return null;
+  return (
+    <RoutedApp
+      key={session.tenant.id}
+      repository={repository}
+      socialAccountsRepository={socialAccountsRepository}
+      workspaceId={session.tenant.id}
+    />
+  );
+}
+
+function AppRoutes({
+  repository,
+  socialAccountsRepository,
+}: Pick<RoutedAppProps, "repository" | "socialAccountsRepository">) {
+  return (
+    <Routes>
+      <Route
+        path="/login"
+        element={<PublicOnly><Login /></PublicOnly>}
+      />
+      <Route
+        path="/register"
+        element={<PublicOnly><Register /></PublicOnly>}
+      />
+      <Route
+        path="*"
+        element={
+          <RequireAuth>
+            <AuthenticatedApplication
+              repository={repository}
+              socialAccountsRepository={socialAccountsRepository}
+            />
+          </RequireAuth>
+        }
+      />
+    </Routes>
+  );
+}
+
+export default function App({
+  authRepository,
+  initialAuthSession,
+  repository,
+  socialAccountsRepository,
+}: AppProps) {
+  const configuredServices = useMemo(() => createConfiguredAppServices(), []);
+  const resolvedAuthRepository =
+    authRepository ?? configuredServices.authRepository;
+  const resolvedRepository = repository ?? configuredServices.postsRepository;
+  const resolvedSocialAccountsRepository =
+    socialAccountsRepository ?? configuredServices.socialAccountsRepository;
+  const resolvedInitialSession =
+    initialAuthSession !== undefined
+      ? initialAuthSession
+      : authRepository
+        ? undefined
+        : configuredServices.initialAuthSession;
+
+  return (
+    <HashRouter>
+      <AuthProvider
+        initialSession={resolvedInitialSession}
+        repository={resolvedAuthRepository}
+      >
+        <AppRoutes
+          repository={resolvedRepository}
+          socialAccountsRepository={resolvedSocialAccountsRepository}
+        />
+      </AuthProvider>
 export default function App({ repository }: AppProps) {
   const resolvedRepository = useMemo(
     () => repository ?? createConfiguredPostsRepository(),

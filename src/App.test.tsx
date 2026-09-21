@@ -14,6 +14,7 @@ import { ApiClient } from "./data/api/apiClient";
 import { initialPosts } from "./data/mockData";
 import { HttpPostsRepository } from "./data/posts/HttpPostsRepository";
 import type { PostsRepository } from "./data/posts/PostsRepository";
+import { getPostTitle } from "./domain/postPresentation";
 import type { Post } from "./types/social";
 
 function deferred<T>() {
@@ -27,6 +28,16 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
+function uuid(value: number): string {
+  return `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
+}
+
+const createdPost: Post = {
+  ...initialPosts[0],
+  id: uuid(99),
+  title: "Publicação com latência",
+  caption: "Publicação criada após a resposta controlada.",
+  scheduledFor: "2098-01-14T11:00:00-03:00",
 const createdPost: Post = {
   id: 99,
   title: "Publicação com latência",
@@ -116,12 +127,15 @@ describe("SocialFlow", () => {
     const scheduledPost: Post = {
       ...initialPosts[1],
       caption: "Conteúdo exclusivo para TikTok e LinkedIn.",
+      scheduledFor: "2026-08-18T07:45:00-03:00",
       channels: ["TT", "LI"],
       scheduledAt: "2026-08-18T07:45:00-03:00",
       title: "Próxima publicação da API",
     };
     const laterScheduledPost: Post = {
       ...scheduledPost,
+      id: uuid(501),
+      scheduledFor: "2026-08-20T07:45:00-03:00",
       id: 501,
       scheduledAt: "2026-08-20T07:45:00-03:00",
       title: "Publicação posterior recebida primeiro",
@@ -151,6 +165,16 @@ describe("SocialFlow", () => {
       expect(cardQueries.getByRole("heading", { level: 3 })).toHaveTextContent(
         "18 ago, 07:45",
       );
+      expect(cardQueries.getByText(getPostTitle(scheduledPost))).toBeInTheDocument();
+      expect(cardQueries.getByText(scheduledPost.caption)).toBeInTheDocument();
+      expect(cardQueries.queryByLabelText("Instagram")).not.toBeInTheDocument();
+      expect(cardQueries.queryByLabelText("Facebook")).not.toBeInTheDocument();
+      expect(cardQueries.queryByLabelText("TikTok")).not.toBeInTheDocument();
+      expect(cardQueries.queryByLabelText("LinkedIn")).not.toBeInTheDocument();
+      expect(screen.queryByText(initialPosts[2].title)).not.toBeInTheDocument();
+      expect(screen.queryByText(initialPosts[3].title)).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(getPostTitle(laterScheduledPost)),
       expect(cardQueries.getByText(scheduledPost.title)).toBeInTheDocument();
       expect(cardQueries.getByText(scheduledPost.caption)).toBeInTheDocument();
       expect(cardQueries.getByLabelText("TikTok")).toBeInTheDocument();
@@ -173,6 +197,7 @@ describe("SocialFlow", () => {
     const pendingList = deferred<Post[]>();
     const todayPost: Post = {
       ...initialPosts[0],
+      scheduledFor: "2026-08-12T08:20:00-03:00",
       scheduledAt: "2026-08-12T08:20:00-03:00",
     };
     const repository: PostsRepository = {
@@ -204,12 +229,16 @@ describe("SocialFlow", () => {
     const pendingList = deferred<Post[]>();
     const firstPost: Post = {
       ...initialPosts[0],
+      id: uuid(601),
+      scheduledFor: new Date(2026, 7, 12, 9, 1).toISOString(),
       id: 601,
       scheduledAt: new Date(2026, 7, 12, 9, 1).toISOString(),
       title: "Publicação das 09:01",
     };
     const secondPost: Post = {
       ...initialPosts[1],
+      id: uuid(602),
+      scheduledFor: new Date(2026, 7, 12, 9, 2).toISOString(),
       id: 602,
       scheduledAt: new Date(2026, 7, 12, 9, 2).toISOString(),
       title: "Publicação das 09:02",
@@ -224,6 +253,17 @@ describe("SocialFlow", () => {
         await pendingList.promise;
       });
 
+      expect(screen.getByText(getPostTitle(firstPost))).toBeInTheDocument();
+      expect(screen.queryByText(getPostTitle(secondPost))).not.toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(60_000));
+
+      expect(screen.queryByText(getPostTitle(firstPost))).not.toBeInTheDocument();
+      expect(screen.getByText(getPostTitle(secondPost))).toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(60_000));
+
+      expect(screen.queryByText(getPostTitle(secondPost))).not.toBeInTheDocument();
       expect(screen.getByText(firstPost.title)).toBeInTheDocument();
       expect(screen.queryByText(secondPost.title)).not.toBeInTheDocument();
 
@@ -253,18 +293,24 @@ describe("SocialFlow", () => {
     const earlierCreate = deferred<Post>();
     const listedPost: Post = {
       ...initialPosts[0],
+      id: uuid(611),
+      scheduledFor: new Date(2026, 7, 14, 10).toISOString(),
       id: 611,
       scheduledAt: new Date(2026, 7, 14, 10).toISOString(),
       title: "Publicação mais próxima da lista",
     };
     const laterPost: Post = {
       ...initialPosts[0],
+      id: uuid(612),
+      scheduledFor: new Date(2026, 7, 20, 10).toISOString(),
       id: 612,
       scheduledAt: new Date(2026, 7, 20, 10).toISOString(),
       title: "Criação posterior",
     };
     const earlierPost: Post = {
       ...initialPosts[0],
+      id: uuid(613),
+      scheduledFor: new Date(2026, 7, 13, 10).toISOString(),
       id: 613,
       scheduledAt: new Date(2026, 7, 13, 10).toISOString(),
       title: "Criação anterior",
@@ -283,6 +329,7 @@ describe("SocialFlow", () => {
         await pendingList.promise;
       });
 
+      expect(screen.getByText(getPostTitle(listedPost))).toBeInTheDocument();
       expect(screen.getByText(listedPost.title)).toBeInTheDocument();
 
       fireEvent.click(
@@ -305,6 +352,8 @@ describe("SocialFlow", () => {
         await laterCreate.promise;
       });
 
+      expect(screen.getByText(getPostTitle(listedPost))).toBeInTheDocument();
+      expect(screen.queryByText(getPostTitle(laterPost))).not.toBeInTheDocument();
       expect(screen.getByText(listedPost.title)).toBeInTheDocument();
       expect(screen.queryByText(laterPost.title)).not.toBeInTheDocument();
 
@@ -328,6 +377,8 @@ describe("SocialFlow", () => {
         await earlierCreate.promise;
       });
 
+      expect(screen.getByText(getPostTitle(earlierPost))).toBeInTheDocument();
+      expect(screen.queryByText(getPostTitle(listedPost))).not.toBeInTheDocument();
       expect(screen.getByText(earlierPost.title)).toBeInTheDocument();
       expect(screen.queryByText(listedPost.title)).not.toBeInTheDocument();
       expect(create).toHaveBeenCalledTimes(2);
@@ -445,6 +496,7 @@ describe("SocialFlow", () => {
       await pendingFetch.promise;
     });
 
+    expect(await screen.findByText(getPostTitle(listedPost))).toBeInTheDocument();
     expect(await screen.findByText(listedPost.title)).toBeInTheDocument();
     expect(screen.getByText("12 ago, 14:30")).toBeInTheDocument();
     expect(screen.queryByText("Carregando publicações")).not.toBeInTheDocument();
@@ -509,6 +561,7 @@ describe("SocialFlow", () => {
       await secondFetch.promise;
     });
 
+    expect(await screen.findByText(getPostTitle(listedPost))).toBeInTheDocument();
     expect(await screen.findByText(listedPost.title)).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -724,6 +777,8 @@ describe("SocialFlow", () => {
         selector: "p",
       }),
     ).toHaveAttribute("role", "alert");
+    expect(screen.getByText(getPostTitle(createdPost))).toBeInTheDocument();
+    expect(screen.getAllByText(getPostTitle(createdPost))).toHaveLength(1);
     expect(screen.getByText(createdPost.title)).toBeInTheDocument();
     expect(screen.getAllByText(createdPost.title)).toHaveLength(1);
     expect(
@@ -823,6 +878,18 @@ describe("SocialFlow", () => {
 
       const post = JSON.parse(String(init?.body)) as Record<string, unknown>;
       sentPosts.push(post);
+      const timestamp = new Date().toISOString();
+      return new Response(
+        JSON.stringify({
+          ...post,
+          authorUserId: "22222222-2222-4222-8222-222222222222",
+          createdAt: timestamp,
+          id: uuid(700 + sentPosts.length),
+          publishedAt: null,
+          ragRunId: null,
+          tenantId: "11111111-1111-4111-8111-111111111111",
+          updatedAt: timestamp,
+        }),
       return new Response(
         JSON.stringify({ ...post, id: 700 + sentPosts.length }),
         {
@@ -892,6 +959,12 @@ describe("SocialFlow", () => {
     expect(expected2026).toBe("2026-08-13T13:00:00.000Z");
     expect(expected2027).toBe("2027-08-13T13:00:00.000Z");
     expect(sentPosts[0]).toEqual(
+      expect.objectContaining({ scheduledFor: expected2026 }),
+    );
+    expect(sentPosts[1]).toEqual(
+      expect.objectContaining({ scheduledFor: expected2027 }),
+    );
+    expect(sentPosts[0]?.scheduledFor).not.toBe(sentPosts[1]?.scheduledFor);
       expect.objectContaining({ scheduledAt: expected2026 }),
     );
     expect(sentPosts[1]).toEqual(
@@ -992,6 +1065,7 @@ describe("SocialFlow", () => {
 
     await user.click(screen.getByRole("button", { name: /Publicações/ }));
 
+    expect(screen.getByText(getPostTitle(createdPost))).toBeInTheDocument();
     expect(screen.getByText(createdPost.title)).toBeInTheDocument();
   });
 
@@ -1001,11 +1075,13 @@ describe("SocialFlow", () => {
     const pendingNextList = deferred<Post[]>();
     const oldOnlyPost: Post = {
       ...initialPosts[0],
+      id: uuid(201),
       id: 201,
       title: "Post apenas do repositório anterior",
     };
     const listedOnlyPost: Post = {
       ...initialPosts[1],
+      id: uuid(202),
       id: 202,
       title: "Post exclusivo da nova listagem",
     };
@@ -1054,6 +1130,11 @@ describe("SocialFlow", () => {
 
     await user.click(screen.getByRole("button", { name: /Publicações/ }));
 
+    expect(screen.getByText(getPostTitle(createdPost))).toBeInTheDocument();
+    expect(screen.getAllByText(getPostTitle(createdPost))).toHaveLength(1);
+    expect(screen.getByText(getPostTitle(listedOnlyPost))).toBeInTheDocument();
+    expect(screen.queryByText(getPostTitle(staleCreatedPost))).not.toBeInTheDocument();
+    expect(screen.queryByText(getPostTitle(oldOnlyPost))).not.toBeInTheDocument();
     expect(screen.getByText(createdPost.title)).toBeInTheDocument();
     expect(screen.getAllByText(createdPost.title)).toHaveLength(1);
     expect(screen.getByText(listedOnlyPost.title)).toBeInTheDocument();
@@ -1068,16 +1149,19 @@ describe("SocialFlow", () => {
     const pendingBList = deferred<Post[]>();
     const oldAPost: Post = {
       ...initialPosts[0],
+      id: uuid(301),
       id: 301,
       title: "Resultado antigo do repositório A",
     };
     const freshAPost: Post = {
       ...initialPosts[1],
+      id: uuid(302),
       id: 302,
       title: "Resultado atual do repositório A",
     };
     const bPost: Post = {
       ...initialPosts[0],
+      id: uuid(303),
       id: 303,
       title: "Resultado obsoleto do repositório B",
     };
@@ -1097,6 +1181,7 @@ describe("SocialFlow", () => {
       await firstAList.promise;
     });
 
+    expect(screen.getByText(getPostTitle(oldAPost))).toBeInTheDocument();
     expect(screen.getByText(oldAPost.title)).toBeInTheDocument();
 
     await user.click(
@@ -1123,6 +1208,7 @@ describe("SocialFlow", () => {
         name: "Carregando publicações",
       }),
     ).toBeInTheDocument();
+    expect(screen.queryByText(getPostTitle(oldAPost))).not.toBeInTheDocument();
     expect(screen.queryByText(oldAPost.title)).not.toBeInTheDocument();
 
     rerender(<App repository={repositoryA} />);
@@ -1141,6 +1227,7 @@ describe("SocialFlow", () => {
         name: "Carregando publicações",
       }),
     ).toBeInTheDocument();
+    expect(screen.queryByText(getPostTitle(bPost))).not.toBeInTheDocument();
     expect(screen.queryByText(bPost.title)).not.toBeInTheDocument();
     expect(submitButton).toBeDisabled();
 
@@ -1153,6 +1240,9 @@ describe("SocialFlow", () => {
       await secondAList.promise;
     });
 
+    expect(await screen.findByText(getPostTitle(freshAPost))).toBeInTheDocument();
+    expect(screen.queryByText(getPostTitle(oldAPost))).not.toBeInTheDocument();
+    expect(screen.queryByText(getPostTitle(bPost))).not.toBeInTheDocument();
     expect(await screen.findByText(freshAPost.title)).toBeInTheDocument();
     expect(screen.queryByText(oldAPost.title)).not.toBeInTheDocument();
     expect(screen.queryByText(bPost.title)).not.toBeInTheDocument();
@@ -1232,6 +1322,8 @@ describe("SocialFlow", () => {
     const revisedDate = "2026-08-20";
     const expectedOriginalPayload = {
       caption: originalCaption,
+      scheduledFor: new Date(2026, 7, 14, 11, 15).toISOString(),
+      status: "scheduled",
       channels: ["IG", "FB"],
       color: "purple",
       scheduledAt: new Date(2026, 7, 14, 11, 15).toISOString(),
@@ -1282,6 +1374,7 @@ describe("SocialFlow", () => {
       await pendingCreate.promise;
     });
 
+    expect(screen.getByText(getPostTitle(createdPost))).toBeInTheDocument();
     expect(screen.getByText(createdPost.title)).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { level: 2, name: "Criar publicação" }),

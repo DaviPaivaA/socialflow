@@ -1,8 +1,20 @@
+import type { AuthUser } from "../../shared/authContract";
+
 type TopbarProps = {
+  currentUser: AuthUser;
   onToggleMenu: () => void;
 };
 
-export function Topbar({ onToggleMenu }: TopbarProps) {
+function initials(value: string): string {
+  return value
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+export function Topbar({ currentUser, onToggleMenu }: TopbarProps) {
   return (
     <header className="topbar">
       <button
@@ -29,7 +41,12 @@ export function Topbar({ onToggleMenu }: TopbarProps) {
         >
           ♢<i />
         </button>
-        <div className="avatar user">DA</div>
+        <div
+          aria-label={`Usuário ${currentUser.displayName}`}
+          className="avatar user"
+        >
+          {initials(currentUser.displayName)}
+        </div>
       </div>
     </header>
   );
