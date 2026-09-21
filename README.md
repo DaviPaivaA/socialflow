@@ -1,8 +1,7 @@
 # SocialFlow TCC
 
 Protótipo de uma plataforma de gestão, planejamento, agendamento e análise de
-conteúdo para redes sociais. O projeto foi preparado para publicação gratuita
-no GitHub Pages.
+conteúdo para redes sociais.
 
 ## Funcionalidades demonstradas
 
@@ -16,7 +15,6 @@ no GitHub Pages.
 - gráficos e métricas;
 - contas sociais persistidas e isoladas por Workspace;
 - configurações e automações simuladas;
-- layout responsivo para computador e celular.
 
 ## Executar no computador
 
