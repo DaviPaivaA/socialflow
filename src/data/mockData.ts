@@ -33,6 +33,10 @@ export const initialPosts = [
     publishedAt: null,
     createdAt: "2099-01-01T00:00:00.000Z",
     updatedAt: "2099-01-01T00:00:00.000Z",
+    scheduledAt: "2099-08-12T14:30:00-03:00",
+    channels: ["IG", "FB"],
+    status: "Agendado",
+    color: "coral",
   },
   {
     id: "00000000-0000-4000-8000-000000000002",
@@ -47,6 +51,10 @@ export const initialPosts = [
     publishedAt: null,
     createdAt: "2099-01-01T00:00:00.000Z",
     updatedAt: "2099-01-01T00:00:00.000Z",
+    scheduledAt: "2099-08-13T09:00:00-03:00",
+    channels: ["IG", "TT"],
+    status: "Agendado",
+    color: "purple",
   },
   {
     id: "00000000-0000-4000-8000-000000000003",
@@ -61,6 +69,10 @@ export const initialPosts = [
     publishedAt: null,
     createdAt: "2099-01-01T00:00:00.000Z",
     updatedAt: "2099-01-01T00:00:00.000Z",
+    scheduledAt: "2099-08-14T18:00:00-03:00",
+    channels: ["LI", "FB"],
+    status: "Rascunho",
+    color: "blue",
   },
   {
     id: "00000000-0000-4000-8000-000000000004",
@@ -75,6 +87,10 @@ export const initialPosts = [
     publishedAt: "2099-08-10T14:30:00.000Z",
     createdAt: "2099-01-01T00:00:00.000Z",
     updatedAt: "2099-08-10T14:30:00.000Z",
+    scheduledAt: "2099-08-10T11:30:00-03:00",
+    channels: ["IG", "FB", "TT"],
+    status: "Publicado",
+    color: "green",
   },
 ] satisfies Post[];
 

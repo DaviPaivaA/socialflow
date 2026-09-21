@@ -10,6 +10,8 @@ import type { ReactNode } from "react";
 import {
   HashRouter,
   Navigate,
+import {
+  HashRouter,
   Route,
   Routes,
   useLocation,
@@ -24,6 +26,10 @@ import type { ToastVariant } from "./components/Toast";
 import { titles } from "./data/mockData";
 import { createConfiguredAppServices } from "./data/createAppServices";
 import type { AuthRepository } from "./data/auth/AuthRepository";
+import { Toast } from "./components/Toast";
+import type { ToastVariant } from "./components/Toast";
+import { titles } from "./data/mockData";
+import { createConfiguredPostsRepository } from "./data/posts/createPostsRepository";
 import type {
   CreatePostInput,
   PostsRepository,
@@ -44,6 +50,9 @@ import { Overview } from "./pages/Overview";
 import { Posts } from "./pages/Posts";
 import type { PostsLoadState } from "./pages/Posts";
 import { Register } from "./pages/Register";
+import { Overview } from "./pages/Overview";
+import { Posts } from "./pages/Posts";
+import type { PostsLoadState } from "./pages/Posts";
 import { Settings } from "./pages/Settings";
 import { getNavKey, notFoundTitle, routePaths } from "./routing/routes";
 import type { NavKey, Post } from "./types/social";
@@ -53,6 +62,7 @@ type AppProps = {
   initialAuthSession?: AuthSession | null;
   repository?: PostsRepository;
   socialAccountsRepository?: SocialAccountsRepository;
+  repository?: PostsRepository;
 };
 
 type RoutedAppProps = {
@@ -112,6 +122,18 @@ function getPendingListRequest(
       requests.delete(workspaceId);
     }
     if (requests?.size === 0) {
+  Promise<Post[]>
+>();
+
+function getPendingListRequest(repository: PostsRepository): Promise<Post[]> {
+  const pendingRequest = pendingListRequests.get(repository);
+  if (pendingRequest) return pendingRequest;
+
+  const request = repository.list();
+  pendingListRequests.set(repository, request);
+
+  const clearPendingRequest = () => {
+    if (pendingListRequests.get(repository) === request) {
       pendingListRequests.delete(repository);
     }
   };
@@ -125,6 +147,7 @@ function reconcilePosts(
   createdPosts: readonly Post[],
 ): Post[] {
   const seenIds = new Set<string>();
+  const seenIds = new Set<number>();
 
   return [...createdPosts, ...loadedPosts].filter((post) => {
     if (seenIds.has(post.id)) return false;
@@ -154,6 +177,10 @@ function RoutedApp({
     () => ({ repository, workspaceId }),
     [repository, workspaceId],
   );
+function RoutedApp({ repository }: RoutedAppProps) {
+  const location = useLocation();
+  const routerNavigate = useNavigate();
+  const listRequest = useMemo<ListRequest>(() => ({ repository }), [repository]);
   const [createdPosts, setCreatedPosts] = useState<Post[]>([]);
   const [composerOpen, setComposerOpen] = useState(false);
   const [toast, setToast] = useState<ToastNotification | null>(null);
@@ -194,6 +221,7 @@ function RoutedApp({
       : active === "overview" && firstName
         ? { ...titles.overview, title: `Olá, ${firstName}! 👋` }
         : titles[active];
+  const current = active === null ? notFoundTitle : titles[active];
   const nextPost =
     postsLoadState === "success"
       ? selectNextScheduledPost(posts, scheduleNow)
@@ -227,6 +255,7 @@ function RoutedApp({
     activeListGenerationRef.current = generation;
 
     getPendingListRequest(listRequest.repository, listRequest.workspaceId)
+    getPendingListRequest(listRequest.repository)
       .then((loadedPosts) => {
         if (
           cancelled ||
@@ -234,6 +263,29 @@ function RoutedApp({
         ) {
           return;
         }
+
+        setScheduleNow(Date.now());
+        setPostsLoadResult({
+          generation,
+          posts: loadedPosts,
+          request: listRequest,
+          state: "success",
+        });
+      })
+      .catch(() => {
+        if (
+          !cancelled &&
+          activeListGenerationRef.current === generation
+        ) {
+          showToast("Não foi possível carregar as publicações.", "error");
+          setPostsLoadResult({
+            generation,
+            request: listRequest,
+            state: "error",
+          });
+        }
+      });
+
 
         setScheduleNow(Date.now());
         setPostsLoadResult({
@@ -275,6 +327,7 @@ function RoutedApp({
     if (!nextPost) return;
 
     const scheduledTimestamp = getScheduledTimestamp(nextPost.scheduledFor);
+    const scheduledTimestamp = getScheduledTimestamp(nextPost.scheduledAt);
     if (scheduledTimestamp === null) return;
 
     const delay = Math.min(
@@ -314,6 +367,10 @@ function RoutedApp({
     }
 
     const submittedPayload = { ...input };
+    const submittedPayload = {
+      ...input,
+      channels: [...input.channels],
+    };
     const submittedComposerSession = composerSessionVersionRef.current;
     const submittedDraftRevision = composerDraftRevisionRef.current;
     submissionInFlightRef.current = true;
@@ -429,6 +486,7 @@ function RoutedApp({
             />
           }
         />
+        <Route path={routePaths.channels} element={<Channels />} />
         <Route path={routePaths.settings} element={<Settings />} />
         <Route
           path="*"
@@ -553,6 +611,15 @@ export default function App({
           socialAccountsRepository={resolvedSocialAccountsRepository}
         />
       </AuthProvider>
+export default function App({ repository }: AppProps) {
+  const resolvedRepository = useMemo(
+    () => repository ?? createConfiguredPostsRepository(),
+    [repository],
+  );
+
+  return (
+    <HashRouter>
+      <RoutedApp repository={resolvedRepository} />
     </HashRouter>
   );
 }

@@ -38,6 +38,14 @@ const createdPost: Post = {
   title: "Publicação com latência",
   caption: "Publicação criada após a resposta controlada.",
   scheduledFor: "2098-01-14T11:00:00-03:00",
+const createdPost: Post = {
+  id: 99,
+  title: "Publicação com latência",
+  caption: "Publicação criada após a resposta controlada.",
+  scheduledAt: "2098-01-14T11:00:00-03:00",
+  channels: ["IG"],
+  status: "Agendado",
+  color: "purple",
 };
 
 describe("SocialFlow", () => {
@@ -120,12 +128,16 @@ describe("SocialFlow", () => {
       ...initialPosts[1],
       caption: "Conteúdo exclusivo para TikTok e LinkedIn.",
       scheduledFor: "2026-08-18T07:45:00-03:00",
+      channels: ["TT", "LI"],
+      scheduledAt: "2026-08-18T07:45:00-03:00",
       title: "Próxima publicação da API",
     };
     const laterScheduledPost: Post = {
       ...scheduledPost,
       id: uuid(501),
       scheduledFor: "2026-08-20T07:45:00-03:00",
+      id: 501,
+      scheduledAt: "2026-08-20T07:45:00-03:00",
       title: "Publicação posterior recebida primeiro",
     };
     const repository: PostsRepository = {
@@ -163,6 +175,16 @@ describe("SocialFlow", () => {
       expect(screen.queryByText(initialPosts[3].title)).not.toBeInTheDocument();
       expect(
         screen.queryByText(getPostTitle(laterScheduledPost)),
+      expect(cardQueries.getByText(scheduledPost.title)).toBeInTheDocument();
+      expect(cardQueries.getByText(scheduledPost.caption)).toBeInTheDocument();
+      expect(cardQueries.getByLabelText("TikTok")).toBeInTheDocument();
+      expect(cardQueries.getByLabelText("LinkedIn")).toBeInTheDocument();
+      expect(cardQueries.queryByLabelText("Instagram")).not.toBeInTheDocument();
+      expect(cardQueries.queryByLabelText("Facebook")).not.toBeInTheDocument();
+      expect(screen.queryByText(initialPosts[2].title)).not.toBeInTheDocument();
+      expect(screen.queryByText(initialPosts[3].title)).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(laterScheduledPost.title),
       ).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
@@ -176,6 +198,7 @@ describe("SocialFlow", () => {
     const todayPost: Post = {
       ...initialPosts[0],
       scheduledFor: "2026-08-12T08:20:00-03:00",
+      scheduledAt: "2026-08-12T08:20:00-03:00",
     };
     const repository: PostsRepository = {
       create: vi.fn(),
@@ -208,12 +231,16 @@ describe("SocialFlow", () => {
       ...initialPosts[0],
       id: uuid(601),
       scheduledFor: new Date(2026, 7, 12, 9, 1).toISOString(),
+      id: 601,
+      scheduledAt: new Date(2026, 7, 12, 9, 1).toISOString(),
       title: "Publicação das 09:01",
     };
     const secondPost: Post = {
       ...initialPosts[1],
       id: uuid(602),
       scheduledFor: new Date(2026, 7, 12, 9, 2).toISOString(),
+      id: 602,
+      scheduledAt: new Date(2026, 7, 12, 9, 2).toISOString(),
       title: "Publicação das 09:02",
     };
     const list = vi.fn(() => pendingList.promise);
@@ -237,6 +264,17 @@ describe("SocialFlow", () => {
       act(() => vi.advanceTimersByTime(60_000));
 
       expect(screen.queryByText(getPostTitle(secondPost))).not.toBeInTheDocument();
+      expect(screen.getByText(firstPost.title)).toBeInTheDocument();
+      expect(screen.queryByText(secondPost.title)).not.toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(60_000));
+
+      expect(screen.queryByText(firstPost.title)).not.toBeInTheDocument();
+      expect(screen.getByText(secondPost.title)).toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(60_000));
+
+      expect(screen.queryByText(secondPost.title)).not.toBeInTheDocument();
       expect(
         screen.getByText("Nenhuma publicação agendada"),
       ).toBeInTheDocument();
@@ -257,18 +295,24 @@ describe("SocialFlow", () => {
       ...initialPosts[0],
       id: uuid(611),
       scheduledFor: new Date(2026, 7, 14, 10).toISOString(),
+      id: 611,
+      scheduledAt: new Date(2026, 7, 14, 10).toISOString(),
       title: "Publicação mais próxima da lista",
     };
     const laterPost: Post = {
       ...initialPosts[0],
       id: uuid(612),
       scheduledFor: new Date(2026, 7, 20, 10).toISOString(),
+      id: 612,
+      scheduledAt: new Date(2026, 7, 20, 10).toISOString(),
       title: "Criação posterior",
     };
     const earlierPost: Post = {
       ...initialPosts[0],
       id: uuid(613),
       scheduledFor: new Date(2026, 7, 13, 10).toISOString(),
+      id: 613,
+      scheduledAt: new Date(2026, 7, 13, 10).toISOString(),
       title: "Criação anterior",
     };
     const create = vi
@@ -286,6 +330,7 @@ describe("SocialFlow", () => {
       });
 
       expect(screen.getByText(getPostTitle(listedPost))).toBeInTheDocument();
+      expect(screen.getByText(listedPost.title)).toBeInTheDocument();
 
       fireEvent.click(
         screen.getByRole("button", { name: /Criar publicação/i }),
@@ -309,6 +354,8 @@ describe("SocialFlow", () => {
 
       expect(screen.getByText(getPostTitle(listedPost))).toBeInTheDocument();
       expect(screen.queryByText(getPostTitle(laterPost))).not.toBeInTheDocument();
+      expect(screen.getByText(listedPost.title)).toBeInTheDocument();
+      expect(screen.queryByText(laterPost.title)).not.toBeInTheDocument();
 
       fireEvent.click(
         screen.getByRole("button", { name: /Criar publicação/i }),
@@ -332,6 +379,8 @@ describe("SocialFlow", () => {
 
       expect(screen.getByText(getPostTitle(earlierPost))).toBeInTheDocument();
       expect(screen.queryByText(getPostTitle(listedPost))).not.toBeInTheDocument();
+      expect(screen.getByText(earlierPost.title)).toBeInTheDocument();
+      expect(screen.queryByText(listedPost.title)).not.toBeInTheDocument();
       expect(create).toHaveBeenCalledTimes(2);
       expect(list).toHaveBeenCalledTimes(1);
     } finally {
@@ -448,6 +497,7 @@ describe("SocialFlow", () => {
     });
 
     expect(await screen.findByText(getPostTitle(listedPost))).toBeInTheDocument();
+    expect(await screen.findByText(listedPost.title)).toBeInTheDocument();
     expect(screen.getByText("12 ago, 14:30")).toBeInTheDocument();
     expect(screen.queryByText("Carregando publicações")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -512,6 +562,7 @@ describe("SocialFlow", () => {
     });
 
     expect(await screen.findByText(getPostTitle(listedPost))).toBeInTheDocument();
+    expect(await screen.findByText(listedPost.title)).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -728,6 +779,8 @@ describe("SocialFlow", () => {
     ).toHaveAttribute("role", "alert");
     expect(screen.getByText(getPostTitle(createdPost))).toBeInTheDocument();
     expect(screen.getAllByText(getPostTitle(createdPost))).toHaveLength(1);
+    expect(screen.getByText(createdPost.title)).toBeInTheDocument();
+    expect(screen.getAllByText(createdPost.title)).toHaveLength(1);
     expect(
       screen.queryByRole("button", { name: /^Todos/ }),
     ).not.toBeInTheDocument();
@@ -837,6 +890,8 @@ describe("SocialFlow", () => {
           tenantId: "11111111-1111-4111-8111-111111111111",
           updatedAt: timestamp,
         }),
+      return new Response(
+        JSON.stringify({ ...post, id: 700 + sentPosts.length }),
         {
           headers: { "Content-Type": "application/json" },
           status: 201,
@@ -910,6 +965,12 @@ describe("SocialFlow", () => {
       expect.objectContaining({ scheduledFor: expected2027 }),
     );
     expect(sentPosts[0]?.scheduledFor).not.toBe(sentPosts[1]?.scheduledFor);
+      expect.objectContaining({ scheduledAt: expected2026 }),
+    );
+    expect(sentPosts[1]).toEqual(
+      expect.objectContaining({ scheduledAt: expected2027 }),
+    );
+    expect(sentPosts[0]?.scheduledAt).not.toBe(sentPosts[1]?.scheduledAt);
     expect(sentPosts[0]).not.toHaveProperty("date");
     expect(sentPosts[0]).not.toHaveProperty("time");
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -1005,6 +1066,7 @@ describe("SocialFlow", () => {
     await user.click(screen.getByRole("button", { name: /Publicações/ }));
 
     expect(screen.getByText(getPostTitle(createdPost))).toBeInTheDocument();
+    expect(screen.getByText(createdPost.title)).toBeInTheDocument();
   });
 
   it("reconcilia criação e nova listagem por id sem perder dados", async () => {
@@ -1014,11 +1076,13 @@ describe("SocialFlow", () => {
     const oldOnlyPost: Post = {
       ...initialPosts[0],
       id: uuid(201),
+      id: 201,
       title: "Post apenas do repositório anterior",
     };
     const listedOnlyPost: Post = {
       ...initialPosts[1],
       id: uuid(202),
+      id: 202,
       title: "Post exclusivo da nova listagem",
     };
     const staleCreatedPost: Post = {
@@ -1071,6 +1135,11 @@ describe("SocialFlow", () => {
     expect(screen.getByText(getPostTitle(listedOnlyPost))).toBeInTheDocument();
     expect(screen.queryByText(getPostTitle(staleCreatedPost))).not.toBeInTheDocument();
     expect(screen.queryByText(getPostTitle(oldOnlyPost))).not.toBeInTheDocument();
+    expect(screen.getByText(createdPost.title)).toBeInTheDocument();
+    expect(screen.getAllByText(createdPost.title)).toHaveLength(1);
+    expect(screen.getByText(listedOnlyPost.title)).toBeInTheDocument();
+    expect(screen.queryByText(staleCreatedPost.title)).not.toBeInTheDocument();
+    expect(screen.queryByText(oldOnlyPost.title)).not.toBeInTheDocument();
   });
 
   it("cria nova geração ao voltar ao mesmo repositório e ignora a intermediária", async () => {
@@ -1081,16 +1150,19 @@ describe("SocialFlow", () => {
     const oldAPost: Post = {
       ...initialPosts[0],
       id: uuid(301),
+      id: 301,
       title: "Resultado antigo do repositório A",
     };
     const freshAPost: Post = {
       ...initialPosts[1],
       id: uuid(302),
+      id: 302,
       title: "Resultado atual do repositório A",
     };
     const bPost: Post = {
       ...initialPosts[0],
       id: uuid(303),
+      id: 303,
       title: "Resultado obsoleto do repositório B",
     };
     const listA = vi
@@ -1110,6 +1182,7 @@ describe("SocialFlow", () => {
     });
 
     expect(screen.getByText(getPostTitle(oldAPost))).toBeInTheDocument();
+    expect(screen.getByText(oldAPost.title)).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", { name: /Criar publicação/i }),
@@ -1136,6 +1209,7 @@ describe("SocialFlow", () => {
       }),
     ).toBeInTheDocument();
     expect(screen.queryByText(getPostTitle(oldAPost))).not.toBeInTheDocument();
+    expect(screen.queryByText(oldAPost.title)).not.toBeInTheDocument();
 
     rerender(<App repository={repositoryA} />);
 
@@ -1154,6 +1228,7 @@ describe("SocialFlow", () => {
       }),
     ).toBeInTheDocument();
     expect(screen.queryByText(getPostTitle(bPost))).not.toBeInTheDocument();
+    expect(screen.queryByText(bPost.title)).not.toBeInTheDocument();
     expect(submitButton).toBeDisabled();
 
     fireEvent.submit(form!);
@@ -1168,6 +1243,9 @@ describe("SocialFlow", () => {
     expect(await screen.findByText(getPostTitle(freshAPost))).toBeInTheDocument();
     expect(screen.queryByText(getPostTitle(oldAPost))).not.toBeInTheDocument();
     expect(screen.queryByText(getPostTitle(bPost))).not.toBeInTheDocument();
+    expect(await screen.findByText(freshAPost.title)).toBeInTheDocument();
+    expect(screen.queryByText(oldAPost.title)).not.toBeInTheDocument();
+    expect(screen.queryByText(bPost.title)).not.toBeInTheDocument();
     expect(
       screen.queryByRole("heading", {
         level: 3,
@@ -1246,6 +1324,10 @@ describe("SocialFlow", () => {
       caption: originalCaption,
       scheduledFor: new Date(2026, 7, 14, 11, 15).toISOString(),
       status: "scheduled",
+      channels: ["IG", "FB"],
+      color: "purple",
+      scheduledAt: new Date(2026, 7, 14, 11, 15).toISOString(),
+      status: "Agendado",
       title: "Versão original do Composer",
     };
 
@@ -1258,6 +1340,10 @@ describe("SocialFlow", () => {
     const captionInput = screen.getByRole("textbox", { name: /^Legenda/ });
     const dateInput = screen.getByLabelText("Data");
     const timeInput = screen.getByLabelText("Horário");
+    const instagramButton = screen.getByRole("button", { name: /Instagram/ });
+    const facebookButton = screen.getByRole("button", { name: /Facebook/ });
+    const tiktokButton = screen.getByRole("button", { name: /TikTok/ });
+    const linkedinButton = screen.getByRole("button", { name: /LinkedIn/ });
     const submitButton = screen.getByRole("button", {
       name: "Agendar publicação",
     });
@@ -1277,6 +1363,8 @@ describe("SocialFlow", () => {
     fireEvent.change(captionInput, { target: { value: revisedCaption } });
     fireEvent.change(dateInput, { target: { value: revisedDate } });
     fireEvent.change(timeInput, { target: { value: "18:45" } });
+    fireEvent.click(facebookButton);
+    fireEvent.click(tiktokButton);
     fireEvent.submit(form!);
 
     expect(create).toHaveBeenCalledTimes(1);
@@ -1287,12 +1375,17 @@ describe("SocialFlow", () => {
     });
 
     expect(screen.getByText(getPostTitle(createdPost))).toBeInTheDocument();
+    expect(screen.getByText(createdPost.title)).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { level: 2, name: "Criar publicação" }),
     ).toBeInTheDocument();
     expect(captionInput).toHaveValue(revisedCaption);
     expect(dateInput).toHaveValue(revisedDate);
     expect(timeInput).toHaveValue("18:45");
+    expect(instagramButton).toHaveClass("selected");
+    expect(facebookButton).not.toHaveClass("selected");
+    expect(tiktokButton).toHaveClass("selected");
+    expect(linkedinButton).not.toHaveClass("selected");
     expect(create).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledWith(expectedOriginalPayload);
   });

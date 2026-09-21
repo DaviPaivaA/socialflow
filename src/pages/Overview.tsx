@@ -59,11 +59,23 @@ export function Overview({
                   , {formatScheduledTime(nextPost.scheduledFor)}
                 </h3>
               </div>
+                  {isScheduledToday(nextPost.scheduledAt)
+                    ? "Hoje"
+                    : formatScheduledDate(nextPost.scheduledAt)}
+                  , {formatScheduledTime(nextPost.scheduledAt)}
+                </h3>
+              </div>
+              <div className="channel-stack">
+                {nextPost.channels.map((code) => (
+                  <ChannelBadge code={code} key={code} small />
+                ))}
+              </div>
             </div>
             <div className="next-post-preview">
               <div className="preview-art coral-art"><span>☕</span></div>
               <div>
                 <strong>{getPostTitle(nextPost)}</strong>
+                <strong>{nextPost.title}</strong>
                 <p>{nextPost.caption}</p>
                 <button onClick={() => goTo("posts")} type="button">Ver detalhes →</button>
               </div>

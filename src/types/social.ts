@@ -9,6 +9,16 @@ export type NavKey =
 export type ChannelCode = "IG" | "FB" | "TT" | "LI";
 export type ContentColor = "coral" | "purple" | "blue" | "green";
 
+export type Post = {
+  id: number;
+  title: string;
+  caption: string;
+  scheduledAt: string;
+  channels: ChannelCode[];
+  status: PostStatus;
+  color: ContentColor;
+};
+
 export type NavItem = {
   key: NavKey;
   label: string;

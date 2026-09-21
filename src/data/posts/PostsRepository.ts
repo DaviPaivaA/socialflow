@@ -5,6 +5,20 @@ export type CreatePostInput = {
   scheduledFor: string;
   status: "scheduled";
   title?: string;
+import type {
+  ChannelCode,
+  ContentColor,
+  Post,
+  PostStatus,
+} from "../../types/social";
+
+export type CreatePostInput = {
+  title: string;
+  caption: string;
+  scheduledAt: string;
+  channels: ChannelCode[];
+  status: PostStatus;
+  color: ContentColor;
 };
 
 export interface PostsRepository {
