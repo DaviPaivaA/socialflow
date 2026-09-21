@@ -6,33 +6,42 @@ import { MockPostsRepository } from "./MockPostsRepository";
 import type { CreatePostInput } from "./PostsRepository";
 
 const existingPost: Post = {
-  id: 7,
-  title: "Publicação existente",
+  authorUserId: "22222222-2222-4222-8222-222222222222",
   caption: "Conteúdo já agendado.",
-  scheduledAt: "2026-08-13T10:00:00-03:00",
-  channels: ["IG"],
-  status: "Agendado",
-  color: "coral",
+  createdAt: "2026-08-10T12:00:00.000Z",
+  id: "33333333-3333-4333-8333-333333333333",
+  publishedAt: null,
+  ragRunId: null,
+  scheduledFor: "2026-08-13T10:00:00-03:00",
+  status: "scheduled",
+  tenantId: "11111111-1111-4111-8111-111111111111",
+  title: "Publicação existente",
+  updatedAt: "2026-08-10T12:00:00.000Z",
 };
 
 const newPost: CreatePostInput = {
   title: "Nova publicação",
   caption: "Conteúdo criado no repositório mock.",
-  scheduledAt: "2026-08-14T11:00:00-03:00",
-  channels: ["FB"],
-  status: "Agendado",
-  color: "purple",
+  scheduledFor: "2026-08-14T11:00:00-03:00",
+  status: "scheduled",
 };
 
 describe("MockPostsRepository", () => {
-  it("lista e cria publicações em memória", async () => {
+  it("lista e cria publicações UUID em memória no mesmo tenant", async () => {
     const repository = new MockPostsRepository([existingPost]);
 
     expect(await repository.list()).toEqual([existingPost]);
 
     const created = await repository.create(newPost);
 
-    expect(created).toEqual({ ...newPost, id: 8 });
+    expect(created).toEqual(
+      expect.objectContaining({
+        ...newPost,
+        authorUserId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        tenantId: existingPost.tenantId,
+      }),
+    );
     expect(await repository.list()).toEqual([created, existingPost]);
   });
 
@@ -40,7 +49,7 @@ describe("MockPostsRepository", () => {
     const repository = new MockPostsRepository([existingPost]);
 
     await expect(
-      repository.create({ ...newPost, scheduledAt: "14 ago" }),
+      repository.create({ ...newPost, scheduledFor: "14 ago" }),
     ).rejects.toThrow("O agendamento da publicação é inválido.");
   });
 

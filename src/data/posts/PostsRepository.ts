@@ -1,17 +1,10 @@
-import type {
-  ChannelCode,
-  ContentColor,
-  Post,
-  PostStatus,
-} from "../../types/social";
+import type { Post } from "../../types/social";
 
 export type CreatePostInput = {
-  title: string;
   caption: string;
-  scheduledAt: string;
-  channels: ChannelCode[];
-  status: PostStatus;
-  color: ContentColor;
+  scheduledFor: string;
+  status: "scheduled";
+  title?: string;
 };
 
 export interface PostsRepository {

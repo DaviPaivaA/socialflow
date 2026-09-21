@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .env*
+!.env.example
+dist-server/
 .DS_Store
 npm-debug.log*
 *.tsbuildinfo

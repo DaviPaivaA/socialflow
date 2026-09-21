@@ -1,7 +1,7 @@
-import { ChannelBadge } from "../components/ChannelBadge";
 import { MetricCard } from "../components/MetricCard";
 import { WeekCalendar } from "../components/WeekCalendar";
 import { overviewMetrics } from "../data/mockData";
+import { getPostTitle } from "../domain/postPresentation";
 import {
   formatScheduledDate,
   formatScheduledTime,
@@ -53,22 +53,17 @@ export function Overview({
               <div>
                 <span>PRÓXIMA PUBLICAÇÃO</span>
                 <h3>
-                  {isScheduledToday(nextPost.scheduledAt)
+                  {isScheduledToday(nextPost.scheduledFor)
                     ? "Hoje"
-                    : formatScheduledDate(nextPost.scheduledAt)}
-                  , {formatScheduledTime(nextPost.scheduledAt)}
+                    : formatScheduledDate(nextPost.scheduledFor)}
+                  , {formatScheduledTime(nextPost.scheduledFor)}
                 </h3>
-              </div>
-              <div className="channel-stack">
-                {nextPost.channels.map((code) => (
-                  <ChannelBadge code={code} key={code} small />
-                ))}
               </div>
             </div>
             <div className="next-post-preview">
               <div className="preview-art coral-art"><span>☕</span></div>
               <div>
-                <strong>{nextPost.title}</strong>
+                <strong>{getPostTitle(nextPost)}</strong>
                 <p>{nextPost.caption}</p>
                 <button onClick={() => goTo("posts")} type="button">Ver detalhes →</button>
               </div>

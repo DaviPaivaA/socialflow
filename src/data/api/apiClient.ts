@@ -92,7 +92,11 @@ export class ApiClient {
 
     if (!headers.has("Accept")) headers.set("Accept", "application/json");
 
-    const response = await this.fetchImpl(url, { ...init, headers });
+    const response = await this.fetchImpl(url, {
+      ...init,
+      credentials: init.credentials ?? "include",
+      headers,
+    });
     const { body, parseError } = await parseResponseBody(response);
 
     if (!response.ok) throw new HttpError(response, url, body);
@@ -121,5 +125,17 @@ export class ApiClient {
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+  }
+
+  patch<TResponse, TBody>(path: string, body: TBody): Promise<TResponse> {
+    return this.request<TResponse>(path, {
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH",
+    });
+  }
+
+  delete<TResponse>(path: string): Promise<TResponse> {
+    return this.request<TResponse>(path, { method: "DELETE" });
   }
 }

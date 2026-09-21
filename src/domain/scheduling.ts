@@ -1,4 +1,5 @@
 import type { Post } from "../types/social";
+import { isValidPostTimestamp } from "../../shared/postContract";
 
 const ISO_TIMESTAMP_WITH_ZONE =
   /^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
@@ -19,8 +20,12 @@ function isRealCalendarDate(year: number, month: number, day: number) {
   );
 }
 
-export function getScheduledTimestamp(scheduledAt: string): number | null {
-  const match = ISO_TIMESTAMP_WITH_ZONE.exec(scheduledAt);
+export function getScheduledTimestamp(
+  scheduledFor: string | null | undefined,
+): number | null {
+  if (typeof scheduledFor !== "string") return null;
+
+  const match = ISO_TIMESTAMP_WITH_ZONE.exec(scheduledFor);
   if (!match) return null;
 
   const year = Number(match[1]);
@@ -28,12 +33,12 @@ export function getScheduledTimestamp(scheduledAt: string): number | null {
   const day = Number(match[3]);
   if (!isRealCalendarDate(year, month, day)) return null;
 
-  const timestamp = Date.parse(scheduledAt);
+  const timestamp = Date.parse(scheduledFor);
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-export function isValidScheduledAt(value: unknown): value is string {
-  return typeof value === "string" && getScheduledTimestamp(value) !== null;
+export function isValidScheduledFor(value: unknown): value is string {
+  return isValidPostTimestamp(value);
 }
 
 export function localScheduleToIso(
@@ -68,8 +73,10 @@ export function localScheduleToIso(
   return scheduledDate.toISOString();
 }
 
-export function formatScheduledDate(scheduledAt: string): string {
-  const timestamp = getScheduledTimestamp(scheduledAt);
+export function formatScheduledDate(
+  scheduledFor: string | null | undefined,
+): string {
+  const timestamp = getScheduledTimestamp(scheduledFor);
   if (timestamp === null) return "";
 
   return new Intl.DateTimeFormat("pt-BR", {
@@ -82,8 +89,10 @@ export function formatScheduledDate(scheduledAt: string): string {
     .replace(/^0(?=\d)/, "");
 }
 
-export function formatScheduledTime(scheduledAt: string): string {
-  const timestamp = getScheduledTimestamp(scheduledAt);
+export function formatScheduledTime(
+  scheduledFor: string | null | undefined,
+): string {
+  const timestamp = getScheduledTimestamp(scheduledFor);
   if (timestamp === null) return "";
 
   const scheduledDate = new Date(timestamp);
@@ -93,10 +102,10 @@ export function formatScheduledTime(scheduledAt: string): string {
 }
 
 export function isScheduledToday(
-  scheduledAt: string,
+  scheduledFor: string | null | undefined,
   today = new Date(),
 ): boolean {
-  const timestamp = getScheduledTimestamp(scheduledAt);
+  const timestamp = getScheduledTimestamp(scheduledFor);
   if (timestamp === null) return false;
 
   const scheduledDate = new Date(timestamp);
@@ -115,16 +124,16 @@ export function selectNextScheduledPost(
   let selectedTimestamp = Number.POSITIVE_INFINITY;
 
   for (const post of posts) {
-    if (post.status !== "Agendado") continue;
+    if (post.status !== "scheduled") continue;
 
-    const timestamp = getScheduledTimestamp(post.scheduledAt);
+    const timestamp = getScheduledTimestamp(post.scheduledFor);
     if (timestamp === null || timestamp <= now) continue;
 
     if (
       timestamp < selectedTimestamp ||
       (timestamp === selectedTimestamp &&
         selectedPost !== undefined &&
-        post.id < selectedPost.id)
+        post.id.localeCompare(selectedPost.id) < 0)
     ) {
       selectedPost = post;
       selectedTimestamp = timestamp;

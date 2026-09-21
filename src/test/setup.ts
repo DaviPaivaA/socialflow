@@ -15,6 +15,17 @@ vi.mock("../data/posts/createPostsRepository", async (importOriginal) => {
   };
 });
 
+vi.mock("../data/createAppServices", async (importOriginal) => {
+  const servicesModule =
+    await importOriginal<typeof import("../data/createAppServices")>();
+
+  return {
+    ...servicesModule,
+    createConfiguredAppServices: () =>
+      servicesModule.createAppServices({ mode: "mock" }),
+  };
+});
+
 process.env.TZ = "America/Sao_Paulo";
 
 const blockedNetworkRequests: string[] = [];

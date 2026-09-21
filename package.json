@@ -8,13 +8,23 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:server": "node --env-file-if-exists=.env server/src/index.ts",
+    "start:server": "node --env-file-if-exists=.env dist-server/server/src/index.js",
+    "db:migrate": "node --env-file-if-exists=.env server/src/migrate.ts",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "npm run test:frontend && npm run test:server",
+    "test:frontend": "vitest run",
+    "test:server": "node --env-file-if-exists=.env ./node_modules/vitest/vitest.mjs run --config vitest.server.config.ts",
+    "test:integration": "node --env-file-if-exists=.env ./node_modules/vitest/vitest.mjs run --config vitest.server.config.ts server/test/api.integration.ts server/test/auth.integration.ts server/test/socialAccounts.integration.ts server/test/metaOAuth.integration.ts",
     "test:watch": "vitest",
-    "build": "tsc --noEmit -p tsconfig.app.json && vite build",
+    "build": "npm run build:frontend && npm run build:server",
+    "build:frontend": "tsc --noEmit -p tsconfig.app.json && vite build",
+    "build:server": "tsc -p tsconfig.server.json",
     "preview": "vite preview"
   },
   "dependencies": {
+    "argon2": "^0.45.1",
+    "pg": "8.23.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "react-router": "8.3.0"
@@ -26,6 +36,7 @@
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.4",
     "@types/node": "22.19.19",
+    "@types/pg": "8.23.1",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
