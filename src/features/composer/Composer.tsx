@@ -2,11 +2,6 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import type { CreatePostInput } from "../../data/posts/PostsRepository";
 import { localScheduleToIso } from "../../domain/scheduling";
-import { ChannelBadge } from "../../components/ChannelBadge";
-import { channelCodes, channelMeta } from "../../data/mockData";
-import type { CreatePostInput } from "../../data/posts/PostsRepository";
-import { localScheduleToIso } from "../../domain/scheduling";
-import type { ChannelCode } from "../../types/social";
 
 type ComposerProps = {
   isLoadingPosts: boolean;
@@ -40,36 +35,12 @@ export function Composer({
   const changeTime = (value: string) => {
     onDraftChange();
     setTime(value);
-  const toggleChannel = (code: ChannelCode) => {
-    onDraftChange();
-    setSelected((current) =>
-      current.includes(code)
-        ? current.filter((item) => item !== code)
-        : [...current, code],
-    );
-  };
-
-  const changeCaption = (value: string) => {
-    onDraftChange();
-    setCaption(value);
-  };
-
-  const changeDate = (value: string) => {
-    onDraftChange();
-    setDate(value);
-  };
-
-  const changeTime = (value: string) => {
-    onDraftChange();
-    setTime(value);
   };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const scheduledFor = localScheduleToIso(date, time);
     if (!caption.trim() || scheduledFor === null) {
-    const scheduledAt = localScheduleToIso(date, time);
-    if (!caption.trim() || selected.length === 0 || scheduledAt === null) {
       return;
     }
 
@@ -79,10 +50,6 @@ export function Composer({
       caption: caption.trim(),
       scheduledFor,
       status: "scheduled",
-      scheduledAt,
-      channels: selected,
-      status: "Agendado",
-      color: "purple",
     });
   };
 
@@ -95,16 +62,6 @@ export function Composer({
         </div>
         <div className="composer-body">
           <div className="composer-fields">
-            <div className="field-label">
-              <span>Publicar em</span>
-              <div className="channel-selector">
-                {channelCodes.map((code) => (
-                  <button className={selected.includes(code) ? "selected" : ""} onClick={() => toggleChannel(code)} type="button" key={code}>
-                    <ChannelBadge code={code} small /> {channelMeta[code].name}
-                  </button>
-                ))}
-              </div>
-            </div>
             <label className="field-label">Legenda<textarea value={caption} onChange={(event) => changeCaption(event.target.value)} placeholder="Conte a história por trás desta publicação..." maxLength={500} required /><small>{caption.length}/500</small></label>
             <div className="date-fields">
               <label className="field-label">Data<input type="date" value={date} onChange={(event) => changeDate(event.target.value)} required /></label>

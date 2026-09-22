@@ -11,7 +11,6 @@ import {
 import type { Post, PostStatus } from "../types/social";
 
 type PostFilter = "all" | "scheduled" | "draft" | "published";
-type PostFilter = "Todos" | PostStatus;
 export type PostsLoadState = "loading" | "success" | "error";
 
 const filters: Array<{ label: string; value: PostFilter }> = [
@@ -41,10 +40,6 @@ export function Posts({ loadState, posts, onCompose }: PostsProps) {
   const [filter, setFilter] = useState<PostFilter>("all");
   const visible =
     loadState !== "success" || filter === "all"
-export function Posts({ loadState, posts, onCompose }: PostsProps) {
-  const [filter, setFilter] = useState<PostFilter>("Todos");
-  const visible =
-    loadState !== "success" || filter === "Todos"
       ? posts
       : posts.filter((post) => postMatchesFilter(post, filter));
 
@@ -73,16 +68,6 @@ export function Posts({ loadState, posts, onCompose }: PostsProps) {
                     ? posts.length
                     : posts.filter((post) => postMatchesFilter(post, item.value))
                         .length}
-                className={filter === item ? "active" : ""}
-                onClick={() => setFilter(item)}
-                key={item}
-                type="button"
-              >
-                {item}
-                <span>
-                  {item === "Todos"
-                    ? posts.length
-                    : posts.filter((post) => post.status === item).length}
                 </span>
               </button>
             ))
@@ -126,44 +111,6 @@ export function Posts({ loadState, posts, onCompose }: PostsProps) {
               </article>
             );
           })}
-          visible.map((post) => (
-            <article className="post-row" key={post.id}>
-              <div className={"post-thumbnail " + post.color}>
-                <span>
-                  {post.color === "coral"
-                    ? "☕"
-                    : post.color === "purple"
-                      ? "✦"
-                      : "●"}
-                </span>
-              </div>
-              <div className="post-main">
-                <div>
-                  <strong>{post.title}</strong>
-                  <StatusPill status={post.status} />
-                </div>
-                <p>{post.caption}</p>
-                <div className="post-meta">
-                  <span>
-                    ▦ {formatScheduledDate(post.scheduledAt)}, {" "}
-                    {formatScheduledTime(post.scheduledAt)}
-                  </span>
-                  <div>
-                    {post.channels.map((code) => (
-                      <ChannelBadge code={code} small key={code} />
-                    ))}
-                  </div>
-                </div>
-              </div>
-              <button
-                className="more-button"
-                aria-label={"Opções de " + post.title}
-                type="button"
-              >
-                •••
-              </button>
-            </article>
-          ))}
       </div>
     </section>
   );
