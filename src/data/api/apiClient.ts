@@ -97,7 +97,6 @@ export class ApiClient {
       credentials: init.credentials ?? "include",
       headers,
     });
-    const response = await this.fetchImpl(url, { ...init, headers });
     const { body, parseError } = await parseResponseBody(response);
 
     if (!response.ok) throw new HttpError(response, url, body);

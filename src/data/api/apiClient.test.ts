@@ -23,7 +23,6 @@ describe("ApiClient", () => {
     );
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({ credentials: "include", method: "GET" }),
-      expect.objectContaining({ method: "GET" }),
     );
   });
 

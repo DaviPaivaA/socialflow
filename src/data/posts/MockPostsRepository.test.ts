@@ -17,13 +17,6 @@ const existingPost: Post = {
   tenantId: "11111111-1111-4111-8111-111111111111",
   title: "Publicação existente",
   updatedAt: "2026-08-10T12:00:00.000Z",
-  id: 7,
-  title: "Publicação existente",
-  caption: "Conteúdo já agendado.",
-  scheduledAt: "2026-08-13T10:00:00-03:00",
-  channels: ["IG"],
-  status: "Agendado",
-  color: "coral",
 };
 
 const newPost: CreatePostInput = {
@@ -35,14 +28,6 @@ const newPost: CreatePostInput = {
 
 describe("MockPostsRepository", () => {
   it("lista e cria publicações UUID em memória no mesmo tenant", async () => {
-  scheduledAt: "2026-08-14T11:00:00-03:00",
-  channels: ["FB"],
-  status: "Agendado",
-  color: "purple",
-};
-
-describe("MockPostsRepository", () => {
-  it("lista e cria publicações em memória", async () => {
     const repository = new MockPostsRepository([existingPost]);
 
     expect(await repository.list()).toEqual([existingPost]);
@@ -57,7 +42,6 @@ describe("MockPostsRepository", () => {
         tenantId: existingPost.tenantId,
       }),
     );
-    expect(created).toEqual({ ...newPost, id: 8 });
     expect(await repository.list()).toEqual([created, existingPost]);
   });
 
@@ -66,7 +50,6 @@ describe("MockPostsRepository", () => {
 
     await expect(
       repository.create({ ...newPost, scheduledFor: "14 ago" }),
-      repository.create({ ...newPost, scheduledAt: "14 ago" }),
     ).rejects.toThrow("O agendamento da publicação é inválido.");
   });
 
