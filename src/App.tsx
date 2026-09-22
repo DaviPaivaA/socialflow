@@ -402,12 +402,13 @@ function RoutedApp({
               loadState={postsLoadState}
               nextPost={nextPost}
               onCompose={openComposer}
+              posts={posts}
             />
           }
         />
         <Route
           path={routePaths.agenda}
-          element={<Agenda onCompose={openComposer} />}
+          element={<Agenda loadState={postsLoadState} onCompose={openComposer} posts={posts} />}
         />
         <Route
           path={routePaths.posts}
@@ -429,7 +430,7 @@ function RoutedApp({
             />
           }
         />
-        <Route path={routePaths.settings} element={<Settings />} />
+        <Route path={routePaths.settings} element={<Settings workspaceName={session.tenant.name} />} />
         <Route
           path="*"
           element={<NotFound onGoHome={() => navigate("overview")} />}

@@ -109,14 +109,13 @@ export function Sidebar({
           >
             <i>{item.icon}</i>
             <span>{item.label}</span>
-            {item.key === "posts" && <b>3</b>}
           </button>
         ))}
       </nav>
       <div className="sidebar-tip">
         <span>✦</span>
         <strong>Horário inteligente</strong>
-        <p>Seu público está mais ativo hoje às 19h.</p>
+        <p>Disponível quando houver dados de desempenho suficientes.</p>
         <button onClick={onCompose} type="button">
           Criar post
         </button>

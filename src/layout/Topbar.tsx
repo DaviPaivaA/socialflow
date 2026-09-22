@@ -39,7 +39,7 @@ export function Topbar({ currentUser, onToggleMenu }: TopbarProps) {
           className="notification"
           type="button"
         >
-          ♢<i />
+          ♢
         </button>
         <div
           aria-label={`Usuário ${currentUser.displayName}`}

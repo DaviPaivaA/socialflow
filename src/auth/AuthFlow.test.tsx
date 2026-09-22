@@ -454,6 +454,7 @@ describe("autenticação no frontend", () => {
     );
 
     expect(await screen.findByText(initialPosts[0].title)).toBeInTheDocument();
+    expect(screen.getByText("Publicações", { selector: ".metric-card p" }).closest("article")).toHaveTextContent("4");
     const selector = await screen.findByLabelText("Workspace ativo");
     expect(selector).toHaveValue(session.tenant.id);
 
@@ -475,6 +476,7 @@ describe("autenticação no frontend", () => {
     );
     expect(screen.queryByText(initialPosts[0].title)).not.toBeInTheDocument();
     expect(screen.getByText("Carregando publicações")).toBeInTheDocument();
+    expect(screen.getByText("Publicações", { selector: ".metric-card p" }).closest("article")).toHaveTextContent("—");
     expect(list).toHaveBeenCalledTimes(2);
 
     await act(async () => {
@@ -483,6 +485,7 @@ describe("autenticação no frontend", () => {
     });
     expect(await screen.findByText(postB.title)).toBeInTheDocument();
     expect(screen.queryByText(initialPosts[0].title)).not.toBeInTheDocument();
+    expect(screen.getByText("Publicações", { selector: ".metric-card p" }).closest("article")).toHaveTextContent("1");
   });
 
   it("sincroniza troca de workspace e logout entre abas sem transmitir segredos", async () => {

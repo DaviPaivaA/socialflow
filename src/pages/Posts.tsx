@@ -33,7 +33,7 @@ function postMatchesFilter(post: Post, filter: PostFilter) {
 function postThumbnailSymbol(status: PostStatus) {
   if (status === "published") return "●";
   if (status === "scheduled" || status === "publishing") return "✦";
-  return "☕";
+  return "◌";
 }
 
 export function Posts({ loadState, posts, onCompose }: PostsProps) {

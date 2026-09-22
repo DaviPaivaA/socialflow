@@ -1,20 +1,21 @@
 import { settingPreferences } from "../data/mockData";
 
-export function Settings() {
+export function Settings({ workspaceName }: { workspaceName: string }) {
   return (
     <section className="settings-layout">
       <article className="panel settings-card">
         <div className="section-heading"><div><span>PERFIL</span><h2>Área de trabalho</h2></div></div>
-        <label className="field-label">Nome da marca<input defaultValue="Café Aurora" /></label>
-        <label className="field-label">Fuso horário<select defaultValue="America/Sao_Paulo"><option value="America/Sao_Paulo">Brasília (GMT−3)</option></select></label>
-        <button className="primary-button" type="button">Salvar alterações</button>
+        <label className="field-label">Workspace<input value={workspaceName} readOnly /></label>
+        <p>Alterações de perfil estarão disponíveis em breve.</p>
+        <button className="primary-button" disabled type="button">Salvar alterações</button>
       </article>
       <article className="panel settings-card">
         <div className="section-heading"><div><span>AUTOMAÇÕES</span><h2>Preferências de publicação</h2></div></div>
-        {settingPreferences.map(({ title, description }, index) => (
+        <p>Automações ainda não estão disponíveis.</p>
+        {settingPreferences.map(({ title, description }) => (
           <label className="switch-row" key={title}>
             <span><strong>{title}</strong><small>{description}</small></span>
-            <input type="checkbox" defaultChecked={index !== 1} /><i />
+            <input type="checkbox" disabled /><i />
           </label>
         ))}
       </article>

@@ -64,8 +64,12 @@ export function createAppServices({
 }
 
 export function createConfiguredAppServices(): AppServices {
+  const mode = import.meta.env.VITE_POSTS_REPOSITORY;
+  if (import.meta.env.PROD && mode?.trim().toLowerCase() !== "http") {
+    throw new Error("Em produção, configure VITE_POSTS_REPOSITORY=http.");
+  }
   return createAppServices({
     apiUrl: import.meta.env.VITE_API_URL,
-    mode: import.meta.env.VITE_POSTS_REPOSITORY,
+    mode,
   });
 }

@@ -1,8 +1,6 @@
 import type {
-  CalendarDay,
   ChannelCode,
   ChannelDetails,
-  Metric,
   NavItem,
   NavKey,
   PageTitle,
@@ -89,10 +87,9 @@ export const channelMeta: Record<ChannelCode, ChannelDetails> = {
 
 export const titles: Record<NavKey, PageTitle> = {
   overview: {
-    eyebrow: "QUARTA-FEIRA, 12 DE AGOSTO",
-    title: "Olá, Davi! 👋",
-    description:
-      "Seu conteúdo está no ritmo certo. Veja o que vem a seguir.",
+    eyebrow: "VISÃO GERAL",
+    title: "Boas-vindas ao SocialFlow",
+    description: "Veja suas publicações e planeje os próximos conteúdos.",
   },
   agenda: {
     eyebrow: "PLANEJAMENTO",
@@ -120,110 +117,6 @@ export const titles: Record<NavKey, PageTitle> = {
     description: "Personalize o funcionamento da sua área de trabalho.",
   },
 };
-
-export const calendarDays: CalendarDay[] = [
-  {
-    day: "SEG",
-    date: "10",
-    items: [{ name: "Menu", color: "green", time: "11:30" }],
-  },
-  {
-    day: "TER",
-    date: "11",
-    items: [{ name: "Stories", color: "blue", time: "16:00" }],
-  },
-  {
-    day: "QUA",
-    date: "12",
-    today: true,
-    items: [
-      { name: "Bastidores", color: "coral", time: "14:30" },
-      { name: "Enquete", color: "purple", time: "19:00" },
-    ],
-  },
-  {
-    day: "QUI",
-    date: "13",
-    items: [{ name: "Dica", color: "purple", time: "09:00" }],
-  },
-  {
-    day: "SEX",
-    date: "14",
-    items: [{ name: "Equipe", color: "blue", time: "18:00" }],
-  },
-  {
-    day: "SÁB",
-    date: "15",
-    items: [{ name: "Oferta", color: "coral", time: "10:00" }],
-  },
-  { day: "DOM", date: "16", items: [] },
-];
-
-export const overviewMetrics: Metric[] = [
-  {
-    label: "Publicações",
-    value: "48",
-    change: "+12% este mês",
-    icon: "✦",
-    tone: "purple",
-  },
-  {
-    label: "Alcance total",
-    value: "87,4 mil",
-    change: "+18,6% este mês",
-    icon: "↗",
-    tone: "blue",
-  },
-  {
-    label: "Engajamento",
-    value: "6,8%",
-    change: "+1,2 p.p.",
-    icon: "♡",
-    tone: "coral",
-  },
-  {
-    label: "Novos seguidores",
-    value: "+2.140",
-    change: "+9,4% este mês",
-    icon: "＋",
-    tone: "green",
-  },
-];
-
-export const analyticsMetrics: Metric[] = [
-  {
-    label: "Impressões",
-    value: "214 mil",
-    change: "+21% vs. julho",
-    icon: "◉",
-    tone: "purple",
-  },
-  {
-    label: "Alcance",
-    value: "87,4 mil",
-    change: "+18,6% vs. julho",
-    icon: "↗",
-    tone: "blue",
-  },
-  {
-    label: "Interações",
-    value: "14.280",
-    change: "+8,3% vs. julho",
-    icon: "♡",
-    tone: "coral",
-  },
-  {
-    label: "Cliques",
-    value: "3.842",
-    change: "+14,1% vs. julho",
-    icon: "↗",
-    tone: "green",
-  },
-];
-
-export const analyticsBars = [
-  38, 52, 46, 72, 64, 88, 76, 96, 81, 100, 92, 118,
-];
 
 export const settingPreferences: SettingPreference[] = [
   {

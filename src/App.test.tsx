@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { ApiClient } from "./data/api/apiClient";
 import { initialPosts } from "./data/mockData";
+import { MockAuthRepository, demoAuthSession } from "./data/auth/MockAuthRepository";
 import { HttpPostsRepository } from "./data/posts/HttpPostsRepository";
 import type { PostsRepository } from "./data/posts/PostsRepository";
 import { getPostTitle } from "./domain/postPresentation";
@@ -30,6 +31,10 @@ function deferred<T>() {
 
 function uuid(value: number): string {
   return `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
+}
+
+function nextPostCard() {
+  return within(document.querySelector(".next-post-card") as HTMLElement);
 }
 
 const createdPost: Post = {
@@ -70,6 +75,78 @@ describe("SocialFlow", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  it("não apresenta dados de demonstração a um Workspace real vazio no caminho HTTP", async () => {
+    const session = {
+      ...demoAuthSession,
+      tenant: { ...demoAuthSession.tenant, name: "Workspace de Ana" },
+      user: { ...demoAuthSession.user, displayName: "Ana" },
+    };
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    const repository = new HttpPostsRepository(new ApiClient({
+      baseUrl: "https://api.example.test",
+      fetchImpl: fetchMock,
+    }));
+    const user = userEvent.setup();
+
+    render(<App authRepository={new MockAuthRepository(session)} initialAuthSession={session} repository={repository} />);
+
+    expect(await screen.findByText("Nenhuma publicação agendada")).toBeInTheDocument();
+    const publicationMetric = screen.getByText("Publicações", { selector: ".metric-card p" }).closest("article");
+    expect(publicationMetric).toHaveTextContent("0");
+    expect(screen.getByText("Workspace de Ana")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("Café Aurora");
+    expect(document.body).not.toHaveTextContent(/87,4|6,8%|2\.140|4 canais ativos|2 de 3|19h/);
+    expect(screen.queryByText("3", { selector: "nav b" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Análises/ }));
+    expect(screen.getAllByText(/Dados de análise ainda não disponíveis/)).toHaveLength(2);
+    expect(document.body).not.toHaveTextContent(/214 mil|14\.280|3\.842|18,9k|1\.482|7,8%/);
+
+    await user.click(screen.getByRole("button", { name: /Agenda/ }));
+    expect(screen.getAllByText("Livre")).toHaveLength(7);
+    expect(document.body).not.toHaveTextContent(/Menu|Stories|Bastidores|Enquete|Oferta/);
+
+    await user.click(screen.getByRole("button", { name: /Configurações/ }));
+    expect(screen.getByRole("textbox", { name: "Workspace" })).toHaveValue("Workspace de Ana");
+    expect(screen.getByRole("button", { name: "Salvar alterações" })).toBeDisabled();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(3);
+    expect(screen.getAllByRole("checkbox").every((checkbox) => (checkbox as HTMLInputElement).disabled)).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Criar post" }));
+    expect(screen.getByText("Prévia ilustrativa")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/cafeaurora|Patrocinado|18% mais engajamento/);
+    expect(screen.getByRole("button", { name: "Fechar sem salvar" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("mostra na Agenda o horário, título e cor de um post real vindo da API", async () => {
+    window.location.hash = "#/agenda";
+    const now = new Date();
+    const post: Post = {
+      ...initialPosts[0],
+      id: uuid(701),
+      scheduledFor: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 14, 35).toISOString(),
+      title: "Post real do Workspace",
+    };
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify([post]), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    const repository = new HttpPostsRepository(new ApiClient({
+      baseUrl: "https://api.example.test",
+      fetchImpl: fetchMock,
+    }));
+    render(<App repository={repository} />);
+
+    expect(await screen.findByText(post.title!)).toBeInTheDocument();
+    const calendar = document.querySelector(".week-calendar") as HTMLElement;
+    const item = within(calendar).getByText(post.title!).closest(".calendar-item");
+    expect(item).toHaveTextContent("14:35");
+    expect(item).toHaveClass("purple");
+    expect(within(calendar).getAllByText("Livre")).toHaveLength(6);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("exibe estados de carregamento e vazio sem publicação fictícia", async () => {
     const pendingList = deferred<Post[]>();
     const repository: PostsRepository = {
@@ -107,7 +184,7 @@ describe("SocialFlow", () => {
 
     expect(await screen.findByText("PRÓXIMA PUBLICAÇÃO")).toBeInTheDocument();
     expect(screen.getByText("12 ago, 14:30")).toBeInTheDocument();
-    expect(screen.getByText("2 de 3")).toBeInTheDocument();
+    expect(screen.queryByText("2 de 3")).not.toBeInTheDocument();
     expect(screen.getByText(initialPosts[0].title)).toBeInTheDocument();
     expect(screen.getByText(initialPosts[0].caption)).toBeInTheDocument();
   });
@@ -226,17 +303,17 @@ describe("SocialFlow", () => {
         await pendingList.promise;
       });
 
-      expect(screen.getByText(getPostTitle(firstPost))).toBeInTheDocument();
-      expect(screen.queryByText(getPostTitle(secondPost))).not.toBeInTheDocument();
+      expect(nextPostCard().getByText(getPostTitle(firstPost))).toBeInTheDocument();
+      expect(nextPostCard().queryByText(getPostTitle(secondPost))).not.toBeInTheDocument();
 
       act(() => vi.advanceTimersByTime(60_000));
 
-      expect(screen.queryByText(getPostTitle(firstPost))).not.toBeInTheDocument();
-      expect(screen.getByText(getPostTitle(secondPost))).toBeInTheDocument();
+      expect(nextPostCard().queryByText(getPostTitle(firstPost))).not.toBeInTheDocument();
+      expect(nextPostCard().getByText(getPostTitle(secondPost))).toBeInTheDocument();
 
       act(() => vi.advanceTimersByTime(60_000));
 
-      expect(screen.queryByText(getPostTitle(secondPost))).not.toBeInTheDocument();
+      expect(nextPostCard().queryByText(getPostTitle(secondPost))).not.toBeInTheDocument();
       expect(
         screen.getByText("Nenhuma publicação agendada"),
       ).toBeInTheDocument();
@@ -285,7 +362,7 @@ describe("SocialFlow", () => {
         await pendingList.promise;
       });
 
-      expect(screen.getByText(getPostTitle(listedPost))).toBeInTheDocument();
+      expect(nextPostCard().getByText(getPostTitle(listedPost))).toBeInTheDocument();
 
       fireEvent.click(
         screen.getByRole("button", { name: /Criar publicação/i }),
@@ -307,8 +384,8 @@ describe("SocialFlow", () => {
         await laterCreate.promise;
       });
 
-      expect(screen.getByText(getPostTitle(listedPost))).toBeInTheDocument();
-      expect(screen.queryByText(getPostTitle(laterPost))).not.toBeInTheDocument();
+      expect(nextPostCard().getByText(getPostTitle(listedPost))).toBeInTheDocument();
+      expect(nextPostCard().queryByText(getPostTitle(laterPost))).not.toBeInTheDocument();
 
       fireEvent.click(
         screen.getByRole("button", { name: /Criar publicação/i }),
@@ -330,8 +407,8 @@ describe("SocialFlow", () => {
         await earlierCreate.promise;
       });
 
-      expect(screen.getByText(getPostTitle(earlierPost))).toBeInTheDocument();
-      expect(screen.queryByText(getPostTitle(listedPost))).not.toBeInTheDocument();
+      expect(nextPostCard().getByText(getPostTitle(earlierPost))).toBeInTheDocument();
+      expect(nextPostCard().queryByText(getPostTitle(listedPost))).not.toBeInTheDocument();
       expect(create).toHaveBeenCalledTimes(2);
       expect(list).toHaveBeenCalledTimes(1);
     } finally {
@@ -532,7 +609,7 @@ describe("SocialFlow", () => {
         await Promise.resolve();
       });
 
-      const errorToast = screen.getByRole("alert");
+      const errorToast = document.querySelector(".toast") as HTMLElement;
       expect(errorToast).toHaveTextContent(
         "Não foi possível carregar as publicações.",
       );
@@ -541,7 +618,7 @@ describe("SocialFlow", () => {
 
       act(() => vi.advanceTimersByTime(3500));
 
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(document.querySelector(".toast")).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

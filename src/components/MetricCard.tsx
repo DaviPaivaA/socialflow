@@ -1,6 +1,6 @@
 import type { Metric } from "../types/social";
 
-export function MetricCard({ label, value, change, icon, tone }: Metric) {
+export function MetricCard({ label, value, change, icon, tone, showSpark = true }: Metric & { showSpark?: boolean }) {
   return (
     <article className="metric-card">
       <div className={"metric-icon " + tone}>{icon}</div>
@@ -9,13 +9,13 @@ export function MetricCard({ label, value, change, icon, tone }: Metric) {
         <strong>{value}</strong>
         <span>{change}</span>
       </div>
-      <div className="mini-spark" aria-hidden="true">
+      {showSpark && <div className="mini-spark" aria-hidden="true">
         <i />
         <i />
         <i />
         <i />
         <i />
-      </div>
+      </div>}
     </article>
   );
 }

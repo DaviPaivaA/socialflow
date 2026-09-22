@@ -123,6 +123,12 @@ VITE_POSTS_REPOSITORY=http
 VITE_API_URL=http://localhost:3001
 ```
 
+No build de produção, `VITE_POSTS_REPOSITORY=http` é obrigatório: a aplicação
+não usa o modo mock como fallback quando a configuração está ausente. O modo
+mock permanece disponível para desenvolvimento e testes. Métricas de Analytics
+ainda não têm backend; a interface mostra estado indisponível em vez de valores
+simulados.
+
 O backend usa `DATABASE_URL`, aceita `HOST` e `PORT` e libera, com credenciais,
 somente a origem exata definida em `CORS_ORIGIN`. No desenvolvimento, mantenha
 frontend e API usando o mesmo hostname (`localhost` nos exemplos) para que o

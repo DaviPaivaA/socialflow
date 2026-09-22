@@ -18,9 +18,17 @@ export function Composer({
   onDraftChange,
   onSchedule,
 }: ComposerProps) {
+  const [initialSchedule] = useState(() => {
+    const nextHour = new Date();
+    nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
+    return {
+      date: `${nextHour.getFullYear()}-${String(nextHour.getMonth() + 1).padStart(2, "0")}-${String(nextHour.getDate()).padStart(2, "0")}`,
+      time: `${String(nextHour.getHours()).padStart(2, "0")}:00`,
+    };
+  });
   const [caption, setCaption] = useState("");
-  const [date, setDate] = useState("2026-08-13");
-  const [time, setTime] = useState("10:00");
+  const [date, setDate] = useState(initialSchedule.date);
+  const [time, setTime] = useState(initialSchedule.time);
 
   const changeCaption = (value: string) => {
     onDraftChange();
@@ -67,15 +75,15 @@ export function Composer({
               <label className="field-label">Data<input type="date" value={date} onChange={(event) => changeDate(event.target.value)} required /></label>
               <label className="field-label">Horário<input type="time" value={time} onChange={(event) => changeTime(event.target.value)} required /></label>
             </div>
-            <div className="best-time"><span>✦</span><div><strong>Sugestão inteligente</strong><p>10:00 tem 18% mais engajamento às quintas-feiras.</p></div></div>
+            <div className="best-time"><span>✦</span><div><strong>Agendamento</strong><p>Escolha a data e o horário da publicação.</p></div></div>
           </div>
           <div className="composer-preview">
             <span>PRÉ-VISUALIZAÇÃO</span>
             <div className="social-preview">
-              <div className="social-user"><div className="avatar tiny">CA</div><div><strong>cafeaurora</strong><span>Patrocinado</span></div><b>•••</b></div>
-              <div className="preview-canvas"><span>☕</span><p>PAUSAS QUE<br /><b>RENOVAM.</b></p></div>
+              <div className="social-user"><div className="avatar tiny">SF</div><div><strong>Seu perfil</strong><span>Prévia ilustrativa</span></div><b>•••</b></div>
+              <div className="preview-canvas"><span>✦</span><p>SEU CONTEÚDO<br /><b>AQUI.</b></p></div>
               <div className="social-actions">♡　⌁　➤ <span>▣</span></div>
-              <p><strong>cafeaurora</strong> {caption || "Sua legenda aparecerá aqui..."}</p>
+              <p><strong>Seu perfil</strong> {caption || "Sua legenda aparecerá aqui..."}</p>
             </div>
           </div>
         </div>
@@ -85,7 +93,7 @@ export function Composer({
             onClick={onClose}
             type="button"
           >
-            Salvar rascunho
+            Fechar sem salvar
           </button>
           <button
             aria-busy={isSubmitting}
