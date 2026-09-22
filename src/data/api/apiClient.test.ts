@@ -2,6 +2,30 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiClient, HttpError, JsonParseError } from "./apiClient";
 
 describe("ApiClient", () => {
+  it("invoca o fetch global com globalThis como receiver", async () => {
+    const fetchGlobal = vi.fn(function (
+      this: typeof globalThis,
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) {
+      expect(this).toBe(globalThis);
+      expect(input).toBe("https://api.socialflow.example/health");
+      expect(init).toEqual(
+        expect.objectContaining({ credentials: "include", method: "GET" }),
+      );
+      return Promise.resolve(
+        new Response(JSON.stringify({ status: "ok" }), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchGlobal);
+    const client = new ApiClient({ baseUrl: "https://api.socialflow.example" });
+
+    await expect(client.get("/health")).resolves.toEqual({ status: "ok" });
+    expect(fetchGlobal).toHaveBeenCalledTimes(1);
+  });
+
   it("retorna uma resposta de sucesso sem acessar a rede", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ posts: [{ id: 1 }] }), {

@@ -78,9 +78,9 @@ export class ApiClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
 
-  constructor({ baseUrl, fetchImpl = globalThis.fetch }: ApiClientOptions) {
+  constructor({ baseUrl, fetchImpl }: ApiClientOptions) {
     this.baseUrl = baseUrl;
-    this.fetchImpl = fetchImpl;
+    this.fetchImpl = fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   }
 
   private async requestResponse<T>(
