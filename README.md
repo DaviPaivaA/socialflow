@@ -465,18 +465,3 @@ normalmente e a integração PostgreSQL é explicitamente marcada como ignorada.
 - Em fusos com mudança de horário de verão, um horário local inexistente durante
   o salto do relógio ainda não apresenta uma mensagem de validação explícita no
   Composer.
-
-## Publicar gratuitamente
-
-Consulte o arquivo [PUBLICAR_NO_GITHUB.md](PUBLICAR_NO_GITHUB.md). A publicação
-automática já está configurada e será executada sempre que houver uma alteração
-na branch `main`.
-
-## Observação acadêmica
-
-Esta etapa integra autenticação, publicação local, contas sociais e OAuth Meta
-para descoberta de Facebook Pages e Instagram Professional. OAuth TikTok fica
-para a Etapa 5B.2 e o acabamento da experiência para a Etapa 5C. Não há refresh
-automático, publicação real, analytics, comentários, mensagens ou webhooks.
-Publicação em Instagram/Facebook/TikTok permanece na Etapa 6, Analytics na
-Etapa 7 e RAG somente ao final do roadmap.
