@@ -22,6 +22,7 @@ function postAt(
     caption: `Conteúdo ${id}`,
     createdAt: "2026-01-01T00:00:00.000Z",
     id: uuid(id),
+    mediaAssetIds: [],
     publishedAt: null,
     ragRunId: null,
     scheduledFor,

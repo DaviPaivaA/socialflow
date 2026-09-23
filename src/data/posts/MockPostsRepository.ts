@@ -7,7 +7,7 @@ const MOCK_TENANT_ID = "11111111-1111-4111-8111-111111111111";
 const MOCK_AUTHOR_USER_ID = "22222222-2222-4222-8222-222222222222";
 
 function clonePost(post: Post): Post {
-  return { ...post };
+  return { ...post, mediaAssetIds: [...post.mediaAssetIds] };
 }
 
 export class MockPostsRepository implements PostsRepository {
@@ -34,6 +34,7 @@ export class MockPostsRepository implements PostsRepository {
       caption: input.caption,
       createdAt: now,
       id: crypto.randomUUID(),
+      mediaAssetIds: [...(input.mediaAssetIds ?? [])],
       publishedAt: null,
       ragRunId: null,
       scheduledFor: input.scheduledFor,

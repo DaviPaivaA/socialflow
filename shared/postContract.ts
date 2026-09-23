@@ -15,6 +15,7 @@ export type Post = {
   caption: string;
   createdAt: string;
   id: string;
+  mediaAssetIds: string[];
   publishedAt: string | null;
   ragRunId: string | null;
   scheduledFor: string | null;
@@ -83,6 +84,15 @@ export function isPostStatus(value: unknown): value is PostStatus {
   );
 }
 
+function isMediaAssetIds(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 1 &&
+    value.every(isUuid) &&
+    new Set(value).size === value.length
+  );
+}
+
 export function isPost(value: unknown): value is Post {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -93,6 +103,7 @@ export function isPost(value: unknown): value is Post {
     isUuid(post.id) &&
     isUuid(post.tenantId) &&
     isUuid(post.authorUserId) &&
+    isMediaAssetIds(post.mediaAssetIds) &&
     (post.ragRunId === null || isUuid(post.ragRunId)) &&
     (typeof post.title === "string" || post.title === null) &&
     typeof post.caption === "string" &&

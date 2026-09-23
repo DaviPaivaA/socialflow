@@ -170,8 +170,30 @@ arquivo temporário, calcula SHA-256, move o arquivo para
 metadados em `media_assets`. Se o INSERT falhar, a API tenta remover o arquivo
 movido. O nome original é apenas metadado sanitizado; não define o caminho.
 `GET` nunca expõe `storage_key`, SHA-256 ou caminhos internos. Não há URL de
-conteúdo/pública nesta etapa; mídia ainda não é vinculada ao Post e não é
-publicada na Meta.
+conteúdo/pública nem publicação na Meta.
+
+### Relação Post–mídia — Etapa 6B
+
+`media_assets` armazena os metadados do upload; `post_media` relaciona um Post
+a uma mídia do mesmo Workspace sem mover ou copiar o arquivo físico. O
+`POST /posts` aceita `mediaAssetIds` opcional: ausente ou `[]` cria um Post sem
+mídia; `["UUID da mídia"]` vincula uma mídia já enviada. Nesta etapa, no máximo
+um ID é aceito. A resposta e `GET /posts` sempre incluem `mediaAssetIds: []`
+quando não houver relação, inclusive para Posts antigos. A ordem é definida por
+`post_media.position`, preparando múltiplas mídias ordenadas no futuro.
+
+A API valida a mídia não excluída dentro do tenant da sessão e cria Post e
+relação na mesma transação. Mídia inexistente, de outro Workspace ou marcada
+como excluída retorna o mesmo `404 media_asset_not_found`, sem Post parcial.
+Foreign keys compostas por `tenant_id` também impedem relação cross-tenant
+diretamente no PostgreSQL. Uma mídia pode ser reutilizada em vários Posts do
+mesmo Workspace, independentemente de quem fez o upload. Remover fisicamente
+um Post elimina suas relações; remover fisicamente uma mídia referenciada é
+bloqueado. Não há endpoint de exclusão de mídia nesta etapa.
+
+O Composer ainda não oferece seleção de mídia e continua criando Posts sem
+mídia. O arquivo não tem endpoint binário ou URL pública; publicar na Meta
+continua fora do escopo da 6B.
 
 No futuro deploy Docker, use por exemplo `MEDIA_STORAGE_PATH=/app/data/media`
 na API e um bind mount persistente como `./data/media:/app/data/media` para
@@ -273,6 +295,7 @@ contrato abaixo:
   "caption": "Conteúdo programado.",
   "status": "scheduled",
   "scheduledFor": "2026-08-13T13:00:00.000Z",
+  "mediaAssetIds": [],
   "publishedAt": null,
   "createdAt": "2026-08-10T12:00:00.000Z",
   "updatedAt": "2026-08-10T12:00:00.000Z"

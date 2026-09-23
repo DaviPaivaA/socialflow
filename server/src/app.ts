@@ -16,6 +16,7 @@ import { validateCreatePost } from "./postContract.ts";
 import { AuthenticatedPostsContextResolver } from "./postsContext.ts";
 import {
   InvalidPostsContextError,
+  PostMediaAssetNotFoundError,
   PostgresPostsStore,
 } from "./postsStore.ts";
 import {
@@ -683,6 +684,16 @@ export function createApiServer({
             code: "invalid_posts_context",
             message:
               "O usuário autenticado não possui acesso às publicações deste tenant.",
+          },
+        });
+        return;
+      }
+
+      if (error instanceof PostMediaAssetNotFoundError) {
+        sendJson(response, 404, {
+          error: {
+            code: "media_asset_not_found",
+            message: error.message,
           },
         });
         return;

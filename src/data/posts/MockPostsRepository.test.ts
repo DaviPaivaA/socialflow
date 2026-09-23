@@ -10,6 +10,7 @@ const existingPost: Post = {
   caption: "Conteúdo já agendado.",
   createdAt: "2026-08-10T12:00:00.000Z",
   id: "33333333-3333-4333-8333-333333333333",
+  mediaAssetIds: [],
   publishedAt: null,
   ragRunId: null,
   scheduledFor: "2026-08-13T10:00:00-03:00",
@@ -27,6 +28,26 @@ const newPost: CreatePostInput = {
 };
 
 describe("MockPostsRepository", () => {
+  it("normaliza e clona mediaAssetIds sem compartilhar a referência", async () => {
+    const mediaId = "44444444-4444-4444-8444-444444444444";
+    const seed = { ...existingPost, mediaAssetIds: [mediaId] };
+    const repository = new MockPostsRepository([seed]);
+    seed.mediaAssetIds.push("55555555-5555-4555-8555-555555555555");
+    const first = await repository.list();
+    first[0]!.mediaAssetIds.push("66666666-6666-4666-8666-666666666666");
+    const second = await repository.list();
+    expect(second[0]!.mediaAssetIds).toEqual([mediaId]);
+
+    const createdWithout = await repository.create(newPost);
+    expect(createdWithout.mediaAssetIds).toEqual([]);
+    const supplied = [mediaId];
+    const createdWith = await repository.create({ ...newPost, mediaAssetIds: supplied });
+    supplied.push("77777777-7777-4777-8777-777777777777");
+    createdWith.mediaAssetIds.push("88888888-8888-4888-8888-888888888888");
+    const listed = await repository.list();
+    expect(listed[0]!.mediaAssetIds).toEqual([mediaId]);
+  });
+
   it("lista e cria publicações UUID em memória no mesmo tenant", async () => {
     const repository = new MockPostsRepository([existingPost]);
 

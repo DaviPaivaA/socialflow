@@ -96,8 +96,8 @@ describe("media_assets com PostgreSQL real", () => {
       await runMigrations(pool);
       await runMigrations(pool);
       const migrations = await pool.query<{ name: string }>("SELECT name FROM schema_migrations ORDER BY name");
-      expect(migrations.rows.at(-1)?.name).toBe("008_add_media_assets.sql");
-      expect(migrations.rows).toHaveLength(8);
+      expect(migrations.rows.at(-1)?.name).toBe("009_add_post_media.sql");
+      expect(migrations.rows).toHaveLength(9);
 
       const columns = await pool.query<{ column_name: string; data_type: string }>(`
         SELECT column_name, data_type FROM information_schema.columns

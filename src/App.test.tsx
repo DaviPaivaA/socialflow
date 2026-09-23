@@ -909,6 +909,7 @@ describe("SocialFlow", () => {
           authorUserId: "22222222-2222-4222-8222-222222222222",
           createdAt: timestamp,
           id: uuid(700 + sentPosts.length),
+          mediaAssetIds: [],
           publishedAt: null,
           ragRunId: null,
           tenantId: "11111111-1111-4111-8111-111111111111",

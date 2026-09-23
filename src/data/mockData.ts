@@ -20,6 +20,7 @@ export const navItems: NavItem[] = [
 export const initialPosts = [
   {
     id: "00000000-0000-4000-8000-000000000001",
+    mediaAssetIds: [],
     tenantId: "11111111-1111-4111-8111-111111111111",
     authorUserId: "22222222-2222-4222-8222-222222222222",
     ragRunId: null,
@@ -34,6 +35,7 @@ export const initialPosts = [
   },
   {
     id: "00000000-0000-4000-8000-000000000002",
+    mediaAssetIds: [],
     tenantId: "11111111-1111-4111-8111-111111111111",
     authorUserId: "22222222-2222-4222-8222-222222222222",
     ragRunId: null,
@@ -48,6 +50,7 @@ export const initialPosts = [
   },
   {
     id: "00000000-0000-4000-8000-000000000003",
+    mediaAssetIds: [],
     tenantId: "11111111-1111-4111-8111-111111111111",
     authorUserId: "22222222-2222-4222-8222-222222222222",
     ragRunId: null,
@@ -62,6 +65,7 @@ export const initialPosts = [
   },
   {
     id: "00000000-0000-4000-8000-000000000004",
+    mediaAssetIds: [],
     tenantId: "11111111-1111-4111-8111-111111111111",
     authorUserId: "22222222-2222-4222-8222-222222222222",
     ragRunId: null,

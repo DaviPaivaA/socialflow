@@ -2,6 +2,7 @@ import type { Post } from "../../types/social";
 
 export type CreatePostInput = {
   caption: string;
+  mediaAssetIds?: string[];
   scheduledFor: string;
   status: "scheduled";
   title?: string;

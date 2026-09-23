@@ -1,10 +1,11 @@
-import { isValidPostTimestamp } from "../../shared/postContract.ts";
+import { isUuid, isValidPostTimestamp } from "../../shared/postContract.ts";
 
 export { isPost, isUuid } from "../../shared/postContract.ts";
 export type { Post, PostStatus } from "../../shared/postContract.ts";
 
 export type CreatePostInput = {
   caption: string;
+  mediaAssetIds: string[];
   scheduledFor: string;
   status: "scheduled";
   title?: string;
@@ -44,6 +45,15 @@ export function validateCreatePost(value: unknown): PostValidationResult {
     invalidFields.push("scheduledFor");
   }
   if (value.status !== "scheduled") invalidFields.push("status");
+  const mediaAssetIds = value.mediaAssetIds === undefined ? [] : value.mediaAssetIds;
+  if (
+    !Array.isArray(mediaAssetIds) ||
+    mediaAssetIds.length > 1 ||
+    !mediaAssetIds.every(isUuid) ||
+    new Set(mediaAssetIds).size !== mediaAssetIds.length
+  ) {
+    invalidFields.push("mediaAssetIds");
+  }
 
   if (invalidFields.length > 0) {
     return { success: false, fields: invalidFields };
@@ -53,6 +63,7 @@ export function validateCreatePost(value: unknown): PostValidationResult {
     success: true,
     data: {
       caption: value.caption as string,
+      mediaAssetIds: [...(mediaAssetIds as string[])],
       scheduledFor: value.scheduledFor as string,
       status: "scheduled",
       ...(typeof value.title === "string" ? { title: value.title } : {}),

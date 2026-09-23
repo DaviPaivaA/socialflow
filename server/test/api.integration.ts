@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../../src/data/api/apiClient.ts";
@@ -163,6 +164,21 @@ async function dropSchema(adminPool: Pool, schema: string) {
   await adminPool.end();
 }
 
+async function insertMediaAsset(
+  pool: Pool,
+  input: { tenantId: string; uploadedByUserId: string },
+): Promise<string> {
+  const id = randomUUID();
+  await pool.query(`
+    INSERT INTO media_assets (
+      id, tenant_id, uploaded_by_user_id, storage_key,
+      original_filename, media_type, mime_type, size_bytes, sha256
+    ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'fixture.jpg',
+      'image', 'image/jpeg', 8, $5)
+  `, [id, input.tenantId, input.uploadedByUserId, `${input.tenantId}/${id}.jpg`, "a".repeat(64)]);
+  return id;
+}
+
 async function expectOfficialSchema(pool: Pool) {
   const columns = await pool.query<{
     column_name: string;
@@ -184,7 +200,8 @@ async function expectOfficialSchema(pool: Pool) {
           'oauth_authorization_requests',
           'social_accounts',
           'social_account_credentials',
-          'media_assets'
+          'media_assets',
+          'post_media'
         ]
       )
   `);
@@ -217,6 +234,11 @@ async function expectOfficialSchema(pool: Pool) {
   expect(byColumn.get("media_assets.uploaded_by_user_id")?.data_type).toBe("uuid");
   expect(byColumn.get("media_assets.size_bytes")?.data_type).toBe("bigint");
   expect(byColumn.get("media_assets.created_at")?.data_type).toBe("timestamp with time zone");
+  expect(byColumn.get("post_media.tenant_id")?.data_type).toBe("uuid");
+  expect(byColumn.get("post_media.post_id")?.data_type).toBe("uuid");
+  expect(byColumn.get("post_media.media_asset_id")?.data_type).toBe("uuid");
+  expect(byColumn.get("post_media.position")?.data_type).toBe("integer");
+  expect(byColumn.get("post_media.created_at")?.data_type).toBe("timestamp with time zone");
   expect(byColumn.get("social_accounts.id")?.data_type).toBe("uuid");
   expect(byColumn.get("social_accounts.tenant_id")?.data_type).toBe("uuid");
   expect(byColumn.get("social_accounts.oauth_connection_id")?.data_type).toBe(
@@ -368,6 +390,26 @@ async function expectOfficialSchema(pool: Pool) {
     "FOREIGN KEY (auth_session_id, membership_id) REFERENCES auth_sessions(id, membership_id) ON DELETE CASCADE",
   );
 
+  const postMediaConstraints = await pool.query<{ conname: string; definition: string }>(`
+    SELECT conname, pg_get_constraintdef(oid, true) AS definition
+    FROM pg_constraint WHERE conrelid = 'post_media'::regclass
+  `);
+  const postMediaByName = new Map(postMediaConstraints.rows.map((row) => [row.conname, row.definition]));
+  expect(postMediaByName.get("post_media_pkey")).toBe("PRIMARY KEY (tenant_id, post_id, media_asset_id)");
+  expect(postMediaByName.get("post_media_tenant_post_position_key")).toBe('UNIQUE (tenant_id, post_id, "position")');
+  expect(postMediaByName.get("post_media_position_nonnegative")).toContain('"position" >= 0');
+  expect(postMediaByName.get("post_media_post_fkey")).toContain("FOREIGN KEY (tenant_id, post_id) REFERENCES posts(tenant_id, id) ON DELETE CASCADE");
+  expect(postMediaByName.get("post_media_media_asset_fkey")).toContain("FOREIGN KEY (tenant_id, media_asset_id) REFERENCES media_assets(tenant_id, id) ON DELETE RESTRICT");
+  const mediaConstraints = await pool.query<{ conname: string; definition: string }>(`
+    SELECT conname, pg_get_constraintdef(oid, true) AS definition
+    FROM pg_constraint WHERE conrelid = 'media_assets'::regclass
+  `);
+  expect(mediaConstraints.rows.find((row) => row.conname === "media_assets_tenant_id_id_key")?.definition).toBe("UNIQUE (tenant_id, id)");
+  const postMediaIndexes = await pool.query<{ indexdef: string }>(`
+    SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'post_media'
+  `);
+  expect(postMediaIndexes.rows.some((row) => row.indexdef.includes("(tenant_id, media_asset_id)"))).toBe(true);
+
   const socialEnums = await pool.query<{
     enumlabel: string;
     typname: string;
@@ -402,6 +444,129 @@ describe("API com PostgreSQL e schema oficial", () => {
     return;
   }
 
+  it("impede relação cross-tenant no SQL e aplica posição, CASCADE e RESTRICT", async () => {
+    const databaseUrl = requireTestDatabaseUrl();
+    const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
+    const adminPool = await createSchema(databaseUrl, schema);
+    const pool = schemaPool(databaseUrl, schema);
+    try {
+      await runMigrations(pool);
+      const userA = (await pool.query<{ id: string }>(`
+        INSERT INTO users (email, display_name, password_hash)
+        VALUES ($1, 'Autora A', 'fixture-hash-not-for-login') RETURNING id
+      `, [`sql-a-${randomUUID()}@example.test`])).rows[0]!.id;
+      const userB = (await pool.query<{ id: string }>(`
+        INSERT INTO users (email, display_name, password_hash)
+        VALUES ($1, 'Autora B', 'fixture-hash-not-for-login') RETURNING id
+      `, [`sql-b-${randomUUID()}@example.test`])).rows[0]!.id;
+      const tenantA = (await pool.query<{ id: string }>(`
+        INSERT INTO tenants (name, slug) VALUES ('Tenant A', $1) RETURNING id
+      `, [`sql-a-${randomUUID()}`])).rows[0]!.id;
+      const tenantB = (await pool.query<{ id: string }>(`
+        INSERT INTO tenants (name, slug) VALUES ('Tenant B', $1) RETURNING id
+      `, [`sql-b-${randomUUID()}`])).rows[0]!.id;
+      await pool.query(`INSERT INTO tenant_members (tenant_id, user_id, role)
+        VALUES ($1::uuid, $2::uuid, 'owner')`, [tenantA, userA]);
+      const postA = (await pool.query<{ id: string }>(`
+        INSERT INTO posts (tenant_id, author_user_id, caption, status, scheduled_for)
+        VALUES ($1::uuid, $2::uuid, 'Publicação SQL', 'scheduled', '2027-08-13T13:00:00Z')
+        RETURNING id
+      `, [tenantA, userA])).rows[0]!.id;
+      const mediaA = await insertMediaAsset(pool, { tenantId: tenantA, uploadedByUserId: userA });
+      const mediaA2 = await insertMediaAsset(pool, { tenantId: tenantA, uploadedByUserId: userA });
+      const mediaB = await insertMediaAsset(pool, { tenantId: tenantB, uploadedByUserId: userB });
+      const relationSql = `INSERT INTO post_media (tenant_id, post_id, media_asset_id, position)
+        VALUES ($1::uuid, $2::uuid, $3::uuid, $4)`;
+
+      await expect(pool.query(relationSql, [tenantA, postA, mediaB, 0]))
+        .rejects.toMatchObject({ code: "23503" });
+      await expect(pool.query(relationSql, [tenantA, postA, mediaA, -1]))
+        .rejects.toMatchObject({ code: "23514" });
+      await pool.query(relationSql, [tenantA, postA, mediaA, 0]);
+      await expect(pool.query(relationSql, [tenantA, postA, mediaA, 1]))
+        .rejects.toMatchObject({ code: "23505" });
+      await expect(pool.query(relationSql, [tenantA, postA, mediaA2, 0]))
+        .rejects.toMatchObject({ code: "23505" });
+      await expect(pool.query(`DELETE FROM media_assets WHERE tenant_id = $1::uuid AND id = $2::uuid`, [tenantA, mediaA]))
+        .rejects.toMatchObject({ code: "23001" });
+      await pool.query(`DELETE FROM posts WHERE tenant_id = $1::uuid AND id = $2::uuid`, [tenantA, postA]);
+      const remaining = await pool.query<{ count: string }>(`
+        SELECT count(*)::text AS count FROM post_media
+        WHERE tenant_id = $1::uuid AND post_id = $2::uuid
+      `, [tenantA, postA]);
+      expect(remaining.rows[0]?.count).toBe("0");
+    } finally {
+      await pool.end();
+      await dropSchema(adminPool, schema);
+    }
+  });
+
+  it("atualiza um schema 001–008 com dados e chave candidata preexistente sem perda", async () => {
+    const databaseUrl = requireTestDatabaseUrl();
+    const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
+    const adminPool = await createSchema(databaseUrl, schema);
+    const pool = schemaPool(databaseUrl, schema);
+    const migrationDirectory = await mkdtemp(join(tmpdir(), "socialflow-6b-migrations-"));
+    try {
+      const sourceDirectory = resolve(process.cwd(), "server/migrations");
+      const oldMigrations = (await readdir(sourceDirectory))
+        .filter((name) => /^00[1-8]_[a-z0-9_]+\.sql$/.test(name))
+        .sort();
+      expect(oldMigrations).toHaveLength(8);
+      for (const name of oldMigrations) {
+        await copyFile(resolve(sourceDirectory, name), resolve(migrationDirectory, name));
+      }
+      await runMigrations(pool, migrationDirectory);
+      const userId = (await pool.query<{ id: string }>(
+        `INSERT INTO users (email, display_name, password_hash)
+         VALUES ($1, 'Autora antiga', 'fixture-hash-not-for-login') RETURNING id`,
+        [`upgrade-${randomUUID()}@example.test`],
+      )).rows[0]!.id;
+      const tenantId = (await pool.query<{ id: string }>(
+        `INSERT INTO tenants (name, slug) VALUES ('Workspace antigo', $1) RETURNING id`,
+        [`upgrade-${randomUUID()}`],
+      )).rows[0]!.id;
+      await pool.query(`INSERT INTO tenant_members (tenant_id, user_id, role)
+        VALUES ($1::uuid, $2::uuid, 'owner')`, [tenantId, userId]);
+      const postId = (await pool.query<{ id: string }>(
+        `INSERT INTO posts (tenant_id, author_user_id, caption, status, scheduled_for)
+         VALUES ($1::uuid, $2::uuid, 'Post preservado', 'scheduled', '2027-08-13T13:00:00Z') RETURNING id`,
+        [tenantId, userId],
+      )).rows[0]!.id;
+      const mediaId = await insertMediaAsset(pool, { tenantId, uploadedByUserId: userId });
+      await pool.query(`ALTER TABLE media_assets ADD CONSTRAINT media_assets_tenant_id_id_key UNIQUE (tenant_id, id)`);
+
+      await copyFile(resolve(sourceDirectory, "009_add_post_media.sql"), resolve(migrationDirectory, "009_add_post_media.sql"));
+      await runMigrations(pool, migrationDirectory);
+      await runMigrations(pool, migrationDirectory);
+      await expectOfficialSchema(pool);
+      const migrations = await pool.query<{ name: string }>(`SELECT name FROM schema_migrations ORDER BY name`);
+      expect(migrations.rows).toHaveLength(9);
+      expect(migrations.rows.at(-1)?.name).toBe("009_add_post_media.sql");
+      const candidateKeys = await pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM pg_constraint
+         WHERE conrelid = 'media_assets'::regclass AND conname = 'media_assets_tenant_id_id_key'`,
+      );
+      expect(candidateKeys.rows[0]?.count).toBe("1");
+      const preservedPost = await pool.query<{ caption: string }>(
+        `SELECT caption FROM posts WHERE tenant_id = $1::uuid AND id = $2::uuid`,
+        [tenantId, postId],
+      );
+      expect(preservedPost.rows).toEqual([{ caption: "Post preservado" }]);
+      await pool.query(`INSERT INTO post_media (tenant_id, post_id, media_asset_id, position)
+        VALUES ($1::uuid, $2::uuid, $3::uuid, 0)`, [tenantId, postId, mediaId]);
+      const relation = await pool.query<{ position: number }>(
+        `SELECT position FROM post_media WHERE tenant_id = $1::uuid AND post_id = $2::uuid`,
+        [tenantId, postId],
+      );
+      expect(relation.rows).toEqual([{ position: 0 }]);
+    } finally {
+      await pool.end();
+      await dropSchema(adminPool, schema);
+      await rm(migrationDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("migra instalação nova, usa UUID e isola criação/listagem por tenant", async () => {
     const databaseUrl = requireTestDatabaseUrl();
     const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
@@ -417,7 +582,7 @@ describe("API com PostgreSQL e schema oficial", () => {
       const migrationResult = await migrationPool.query<{ count: string }>(`
         SELECT count(*)::text AS count FROM schema_migrations
       `);
-      expect(migrationResult.rows[0]?.count).toBe("8");
+      expect(migrationResult.rows[0]?.count).toBe("9");
 
       const apiA = await startApi(databaseUrl, schema);
       runningApis.push(apiA);
@@ -589,6 +754,138 @@ describe("API com PostgreSQL e schema oficial", () => {
     }
   });
 
+  it("persiste mídia de posts no Workspace, valida entradas e permite reuso concorrente", async () => {
+    const databaseUrl = requireTestDatabaseUrl();
+    const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
+    const adminPool = await createSchema(databaseUrl, schema);
+    const pool = schemaPool(databaseUrl, schema);
+    let api: RunningApi | undefined;
+    try {
+      await runMigrations(pool);
+      api = await startApi(databaseUrl, schema);
+      const accountA = await registerUser(api.baseUrl, "Autora A", `media-a-${randomUUID()}@example.test`);
+      const accountB = await registerUser(api.baseUrl, "Autora B", `media-b-${randomUUID()}@example.test`);
+      const tenantA = accountA.session.tenant.id;
+      const mediaA = await insertMediaAsset(pool, { tenantId: tenantA, uploadedByUserId: accountA.session.user.id });
+      const mediaB = await insertMediaAsset(pool, { tenantId: accountB.session.tenant.id, uploadedByUserId: accountB.session.user.id });
+      const sameTenantUploader = randomUUID();
+      await pool.query(`INSERT INTO users (id, email, password_hash, display_name) VALUES ($1::uuid, $2, 'fixture-hash-not-for-login', 'Colega')`, [sameTenantUploader, `colleague-${randomUUID()}@example.test`]);
+      await pool.query(`INSERT INTO tenant_members (tenant_id, user_id, role) VALUES ($1::uuid, $2::uuid, 'member')`, [tenantA, sameTenantUploader]);
+      const colleagueMedia = await insertMediaAsset(pool, { tenantId: tenantA, uploadedByUserId: sameTenantUploader });
+      const deletedMedia = await insertMediaAsset(pool, { tenantId: tenantA, uploadedByUserId: accountA.session.user.id });
+      await pool.query(`UPDATE media_assets SET deleted_at = now() WHERE tenant_id = $1::uuid AND id = $2::uuid`, [tenantA, deletedMedia]);
+
+      const create = (mediaAssetIds?: unknown) => apiFetch(`${api!.baseUrl}/posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: accountA.cookie },
+        body: JSON.stringify(mediaAssetIds === undefined ? INPUT : { ...INPUT, mediaAssetIds }),
+      });
+
+      for (const invalid of [null, "bad", ["bad"], [mediaA, mediaB], [mediaA, mediaA]]) {
+        const response = await create(invalid);
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: { code: "invalid_post", fields: ["mediaAssetIds"], message: "Os dados da publicação são inválidos." } });
+      }
+
+      const without = await create();
+      expect(without.status).toBe(201);
+      const withoutPost = await without.json() as { id: string; mediaAssetIds: string[] };
+      expect(withoutPost.mediaAssetIds).toEqual([]);
+      const explicitEmpty = await create([]);
+      expect(explicitEmpty.status).toBe(201);
+      expect((await explicitEmpty.json() as { mediaAssetIds: string[] }).mediaAssetIds).toEqual([]);
+
+      const withMedia = await create([mediaA]);
+      expect(withMedia.status).toBe(201);
+      const withMediaPost = await withMedia.json() as { id: string; mediaAssetIds: string[] };
+      expect(withMediaPost.mediaAssetIds).toEqual([mediaA]);
+      const relation = await pool.query<{ position: number }>(`SELECT position FROM post_media WHERE tenant_id = $1::uuid AND post_id = $2::uuid AND media_asset_id = $3::uuid`, [tenantA, withMediaPost.id, mediaA]);
+      expect(relation.rows).toEqual([{ position: 0 }]);
+      const colleagueResponse = await create([colleagueMedia]);
+      expect(colleagueResponse.status).toBe(201);
+      expect((await colleagueResponse.json() as { mediaAssetIds: string[] }).mediaAssetIds).toEqual([colleagueMedia]);
+
+      const beforeUnavailable = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM posts WHERE tenant_id = $1::uuid`, [tenantA]);
+      const unavailableBodies: unknown[] = [];
+      for (const id of [randomUUID(), mediaB, deletedMedia]) {
+        const response = await create([id]);
+        expect(response.status).toBe(404);
+        unavailableBodies.push(await response.json());
+      }
+      expect(unavailableBodies).toEqual(Array(3).fill({ error: { code: "media_asset_not_found", message: "A mídia não foi encontrada." } }));
+      const afterUnavailable = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM posts WHERE tenant_id = $1::uuid`, [tenantA]);
+      expect(afterUnavailable.rows).toEqual(beforeUnavailable.rows);
+
+      const [reusedA, reusedB] = await Promise.all([create([mediaA]), create([mediaA])]);
+      expect(reusedA.status).toBe(201);
+      expect(reusedB.status).toBe(201);
+      const reusedPostA = await reusedA.json() as { id: string };
+      const reusedPostB = await reusedB.json() as { id: string };
+      expect(reusedPostA.id).not.toBe(reusedPostB.id);
+      const reusedRelations = await pool.query<{ post_id: string }>(`SELECT post_id FROM post_media WHERE tenant_id = $1::uuid AND media_asset_id = $2::uuid`, [tenantA, mediaA]);
+      expect(reusedRelations.rows).toHaveLength(3);
+
+      const legacyPostId = (await pool.query<{ id: string }>(
+        `INSERT INTO posts (tenant_id, author_user_id, caption, status, scheduled_for)
+         VALUES ($1::uuid, $2::uuid, 'Post anterior à relação', 'scheduled', '2027-08-13T13:00:00Z')
+         RETURNING id`,
+        [tenantA, accountA.session.user.id],
+      )).rows[0]!.id;
+
+      await stopApi(api);
+      api = await startApi(databaseUrl, schema);
+      const listResponse = await apiFetch(`${api.baseUrl}/posts`, { headers: { Cookie: accountA.cookie } });
+      expect(listResponse.status).toBe(200);
+      const listed = await listResponse.json() as Array<Record<string, unknown>>;
+      expect(listed.find((post) => post.id === withoutPost.id)?.mediaAssetIds).toEqual([]);
+      expect(listed.find((post) => post.id === withMediaPost.id)?.mediaAssetIds).toEqual([mediaA]);
+      expect(listed.find((post) => post.id === legacyPostId)?.mediaAssetIds).toEqual([]);
+      for (const post of listed) {
+        expect(post).not.toHaveProperty("storageKey");
+        expect(post).not.toHaveProperty("sha256");
+        expect(post).not.toHaveProperty("path");
+      }
+    } finally {
+      if (api) await stopApi(api);
+      await pool.end();
+      await dropSchema(adminPool, schema);
+    }
+  });
+
+  it("desfaz o Post quando a relação falha depois do INSERT", async () => {
+    const databaseUrl = requireTestDatabaseUrl();
+    const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
+    const adminPool = await createSchema(databaseUrl, schema);
+    const pool = schemaPool(databaseUrl, schema);
+    let api: RunningApi | undefined;
+    try {
+      await runMigrations(pool);
+      api = await startApi(databaseUrl, schema);
+      const account = await registerUser(api.baseUrl, "Autora", `rollback-${randomUUID()}@example.test`);
+      const mediaId = await insertMediaAsset(pool, { tenantId: account.session.tenant.id, uploadedByUserId: account.session.user.id });
+      const before = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM posts WHERE tenant_id = $1::uuid`, [account.session.tenant.id]);
+      await pool.query(`CREATE FUNCTION reject_post_media_for_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced post_media failure'; END; $$`);
+      await pool.query(`CREATE TRIGGER reject_post_media_for_test BEFORE INSERT ON post_media FOR EACH ROW EXECUTE FUNCTION reject_post_media_for_test()`);
+      try {
+        const response = await apiFetch(`${api.baseUrl}/posts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: account.cookie },
+          body: JSON.stringify({ ...INPUT, mediaAssetIds: [mediaId] }),
+        });
+        expect(response.status).toBe(500);
+        const after = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM posts WHERE tenant_id = $1::uuid`, [account.session.tenant.id]);
+        expect(after.rows).toEqual(before.rows);
+      } finally {
+        await pool.query(`DROP TRIGGER IF EXISTS reject_post_media_for_test ON post_media`);
+        await pool.query(`DROP FUNCTION IF EXISTS reject_post_media_for_test()`);
+      }
+    } finally {
+      if (api) await stopApi(api);
+      await pool.end();
+      await dropSchema(adminPool, schema);
+    }
+  });
+
   it("valida e baselineia o schema preexistente antes de reconciliar", async () => {
     const databaseUrl = requireTestDatabaseUrl();
     const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
@@ -617,6 +914,7 @@ describe("API com PostgreSQL e schema oficial", () => {
         "006_add_pending_social_connection_status.sql",
         "007_add_oauth_authorization_requests.sql",
         "008_add_media_assets.sql",
+        "009_add_post_media.sql",
       ]);
     } finally {
       await pool.end();
