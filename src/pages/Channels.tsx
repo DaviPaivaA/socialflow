@@ -81,11 +81,21 @@ function accountHandle(account: SocialAccount): string {
     : `@${account.username}`;
 }
 
-function expirationLabel(value: string | null): string {
+function expirationLabel(account: SocialAccount): string {
+  if (account.status === "revoked") return "Sem credencial ativa";
+  if (account.status === "pending") return "Aguardando autorização";
+  if (account.status === "error") return "Reconexão necessária";
+  const value = account.tokenExpiresAt;
+  if (account.status === "expired" && (!value || Date.parse(value) > Date.now())) {
+    return "Reconexão necessária";
+  }
   if (!value) return "Sem expiração informada";
-  return `Token até ${new Intl.DateTimeFormat("pt-BR", {
+  const date = new Intl.DateTimeFormat("pt-BR", {
     dateStyle: "medium",
-  }).format(new Date(value))}`;
+  }).format(new Date(value));
+  return account.status === "expired"
+    ? `Token vencido em ${date}`
+    : `Token até ${date}`;
 }
 
 function defaultNavigateToAuthorization(url: string) {
@@ -179,11 +189,11 @@ export function Channels({
     message: string;
     workspaceId: string;
   } | null>(null);
-  const [disconnecting, setDisconnecting] = useState<{
-    id: string;
-    workspaceId: string;
-  } | null>(null);
+  const [disconnectingIds, setDisconnectingIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [isStartingMeta, setIsStartingMeta] = useState(false);
+  const [reconnectingId, setReconnectingId] = useState<string | null>(null);
   const [initialMetaCallback] = useState(() =>
     metaCallbackResult(window.location.hash),
   );
@@ -248,19 +258,23 @@ export function Channels({
     };
   }, [invalidateSession, repository, workspaceId]);
 
-  const startMetaOAuth = async () => {
+  const startMetaOAuth = async (accountId?: string) => {
     if (metaStartInFlightRef.current || !repository.startMetaOAuth) return;
+    const submittedGeneration = generationRef.current;
     metaStartInFlightRef.current = true;
+    let navigationStarted = false;
     setIsStartingMeta(true);
+    setReconnectingId(accountId ?? null);
     setActionError(null);
     setMetaFeedback(null);
     try {
       const authorizationUrl = await repository.startMetaOAuth(workspaceId);
-      if (componentActiveRef.current) {
+      if (componentActiveRef.current && generationRef.current === submittedGeneration) {
         navigateToAuthorization(authorizationUrl);
+        navigationStarted = true;
       }
     } catch (error) {
-      if (!componentActiveRef.current) return;
+      if (!componentActiveRef.current || generationRef.current !== submittedGeneration) return;
       if (error instanceof HttpError && error.status === 401) {
         invalidateSession();
         return;
@@ -276,8 +290,13 @@ export function Channels({
         workspaceId,
       });
     } finally {
-      metaStartInFlightRef.current = false;
-      if (componentActiveRef.current) setIsStartingMeta(false);
+      if (!navigationStarted) {
+        metaStartInFlightRef.current = false;
+        if (componentActiveRef.current) {
+          setIsStartingMeta(false);
+          setReconnectingId(null);
+        }
+      }
     }
   };
 
@@ -291,7 +310,7 @@ export function Channels({
     const submittedWorkspace = workspaceId;
     const submittedGeneration = generationRef.current;
     disconnectingIdsRef.current.add(account.id);
-    setDisconnecting({ id: account.id, workspaceId: submittedWorkspace });
+    setDisconnectingIds((current) => new Set(current).add(account.id));
     setActionError(null);
     try {
       const revoked = await repository.disconnect(
@@ -323,7 +342,11 @@ export function Channels({
     } finally {
       disconnectingIdsRef.current.delete(account.id);
       if (generationRef.current === submittedGeneration) {
-        setDisconnecting(null);
+        setDisconnectingIds((current) => {
+          const next = new Set(current);
+          next.delete(account.id);
+          return next;
+        });
       }
     }
   };
@@ -362,9 +385,13 @@ export function Channels({
       <section className="channels-grid">
         {accounts.map((account) => {
           const provider = providerDetails[account.provider];
-          const isDisconnecting =
-            disconnecting?.workspaceId === workspaceId &&
-            disconnecting.id === account.id;
+          const isDisconnecting = disconnectingIds.has(account.id);
+          const canReconnectWithMeta =
+            account.provider === "facebook" || account.provider === "instagram";
+          const needsReconnect =
+            account.status === "expired" ||
+            account.status === "revoked" ||
+            account.status === "error";
           return (
             <article className="panel channel-card" key={account.id}>
               <div className="channel-card-top">
@@ -391,19 +418,36 @@ export function Channels({
               </div>
               <div className="channel-health">
                 <span>Credencial</span>
-                <b>{expirationLabel(account.tokenExpiresAt)}</b>
+                <b>{expirationLabel(account)}</b>
               </div>
               <button
                 className="secondary-button full"
-                disabled={isDisconnecting || account.status === "revoked"}
-                onClick={() => void disconnect(account)}
+                disabled={
+                  isDisconnecting ||
+                  account.status === "pending" ||
+                  (needsReconnect && (!canReconnectWithMeta || isStartingMeta || !repository.startMetaOAuth))
+                }
+                onClick={(event) => {
+                  if (needsReconnect && canReconnectWithMeta) {
+                    if (event.detail > 1) return;
+                    void startMetaOAuth(account.id);
+                  } else if (account.status === "connected") {
+                    void disconnect(account);
+                  }
+                }}
                 type="button"
               >
                 {isDisconnecting
                   ? "Desconectando..."
-                  : account.status === "revoked"
-                    ? "Conta desconectada"
-                    : "Desconectar"}
+                  : isStartingMeta && reconnectingId === account.id
+                    ? "Abrindo Meta..."
+                    : account.status === "pending"
+                      ? "Pendente"
+                      : needsReconnect
+                        ? canReconnectWithMeta
+                          ? "Reconectar com Meta"
+                          : "Reconexão em breve"
+                        : "Desconectar"}
               </button>
             </article>
           );

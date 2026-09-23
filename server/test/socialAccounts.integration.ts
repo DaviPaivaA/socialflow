@@ -416,6 +416,38 @@ describe("contas sociais HTTP com PostgreSQL", () => {
       expect(encryptedPayload).not.toContain("plaintext-facebook-a");
       expect(cipher.decryptSecret(encryptedPayload)).toBe("plaintext-facebook-a");
 
+      await pool.query(
+        `UPDATE social_account_credentials
+         SET access_token_expires_at = now() - interval '1 second'
+         WHERE social_account_id = $1::uuid`,
+        [facebookA.id],
+      );
+      const expiredResponse = await apiFetch(
+        `${baseUrl}/social-accounts/${facebookA.id}`,
+        withCookie(cookieA2),
+      );
+      expect(expiredResponse.status).toBe(200);
+      const expiredPayload: unknown = await expiredResponse.json();
+      expect(expiredPayload).toEqual(expect.objectContaining({ status: "expired" }));
+      expect(isSocialAccount(expiredPayload)).toBe(true);
+      expect(JSON.stringify(expiredPayload)).not.toMatch(/accessToken|refreshToken|Encrypted|providerMetadata/);
+      expect((await listAccounts(baseUrl, cookieA2)).find((account) => account.id === facebookA.id)?.status).toBe("expired");
+
+      await pool.query(
+        `UPDATE social_account_credentials
+         SET access_token_expires_at = NULL
+         WHERE social_account_id = $1::uuid`,
+        [facebookA.id],
+      );
+      const noExpiry = await apiFetch(
+        `${baseUrl}/social-accounts/${facebookA.id}`,
+        withCookie(cookieA2),
+      );
+      expect(noExpiry.status).toBe(200);
+      await expect(noExpiry.json()).resolves.toEqual(
+        expect.objectContaining({ status: "connected", tokenExpiresAt: null }),
+      );
+
       const indexes = await pool.query<{ indexname: string }>(`
         SELECT indexname
         FROM pg_indexes

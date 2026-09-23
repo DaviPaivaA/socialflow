@@ -62,6 +62,22 @@ describe("HttpSocialAccountsRepository", () => {
     await expect(leaked.get(account.id, "workspace-a")).rejects.toThrow(
       "conta social válida",
     );
+
+    const leakedList = repositoryWith(
+      vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json({ socialAccounts: [{ ...account, providerMetadata: { token: "secret" } }] }),
+      ),
+    );
+    await expect(leakedList.list("workspace-a")).rejects.toThrow("lista válida");
+
+    const leakedDelete = repositoryWith(
+      vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json({ ...account, access_token_encrypted: "ciphertext" }),
+      ),
+    );
+    await expect(leakedDelete.disconnect(account.id, "workspace-a")).rejects.toThrow(
+      "conta social válida",
+    );
   });
 
   it("atualiza metadados e desconecta usando os métodos HTTP esperados", async () => {

@@ -656,6 +656,21 @@ describe("OAuth Meta HTTP com PostgreSQL", () => {
       { headers: { Cookie: account.cookie }, method: "DELETE" },
     );
     expect(disconnected.status).toBe(200);
+    expect(JSON.stringify(await disconnected.json())).not.toMatch(
+      /accessToken|refreshToken|Encrypted|providerMetadata/,
+    );
+    const clearedCredential = await pool.query<{
+      access_token_encrypted: Buffer | null;
+      refresh_token_encrypted: Buffer | null;
+    }>(
+      `SELECT access_token_encrypted, refresh_token_encrypted
+       FROM social_account_credentials WHERE social_account_id = $1::uuid`,
+      [instagram.id],
+    );
+    expect(clearedCredential.rows[0]).toEqual({
+      access_token_encrypted: null,
+      refresh_token_encrypted: null,
+    });
 
     metaClient.userToken = "meta-long-user-token-reconnected";
     metaClient.pages[1] = {
@@ -671,6 +686,7 @@ describe("OAuth Meta HTTP com PostgreSQL", () => {
     expect(reconnected.id).toBe(instagram.id);
     expect(reconnected.status).toBe("connected");
     expect(reconnected.disconnectedAt).toBeNull();
+    expect(reconnected.profileImageUrl).toBe("https://images.example/instagram.jpg");
     const reconnectedCredential = await pool.query<{
       access_token_encrypted: Buffer;
     }>(`
@@ -687,6 +703,151 @@ describe("OAuth Meta HTTP com PostgreSQL", () => {
       SELECT count(*)::int AS count FROM social_accounts
     `);
     expect(count.rows[0]?.count).toBe(3);
+  });
+
+  it("serializa callbacks simultâneos da mesma conta sem duplicar ou corromper credenciais", async () => {
+    const account = await register();
+    metaClient.pages = [{
+      accessToken: "page-token-concurrent",
+      id: "100000000000040",
+      instagramBusinessAccountId: null,
+      name: "Página concorrente",
+      profileImageUrl: null,
+      tasks: [],
+      username: null,
+    }];
+
+    const [stateOne, stateTwo] = await Promise.all([
+      startOAuth(account.cookie),
+      startOAuth(account.cookie),
+    ]);
+    const responses = await Promise.all([
+      callback(account.cookie, stateOne),
+      callback(account.cookie, stateTwo),
+    ]);
+    expect(responses.map((response) => response.headers.get("location"))).toEqual([
+      `${CORS_ORIGIN}/#/canais?meta=connected`,
+      `${CORS_ORIGIN}/#/canais?meta=connected`,
+    ]);
+
+    const accounts = await listAccounts(account.cookie);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toEqual(expect.objectContaining({
+      displayName: "Página concorrente",
+      providerAccountId: "100000000000040",
+      status: "connected",
+    }));
+    const stored = await pool.query<{
+      account_count: number;
+      access_token_encrypted: Buffer;
+    }>(`
+      SELECT count(account_row.id)::int AS account_count,
+             credential_row.access_token_encrypted
+      FROM social_account_credentials credential_row
+      JOIN social_accounts account_row
+        ON account_row.id = credential_row.social_account_id
+      GROUP BY credential_row.access_token_encrypted
+    `);
+    expect(stored.rows).toHaveLength(1);
+    expect(stored.rows[0]?.account_count).toBe(1);
+    const encrypted = stored.rows[0]!.access_token_encrypted.toString("utf8");
+    expect(encrypted).not.toContain("page-token-concurrent");
+    expect(cipher.decryptSecret(encrypted)).toBe("page-token-concurrent");
+  });
+
+  it("reconecta conta expirada usando o mesmo ID e uma credencial nova", async () => {
+    const account = await register();
+    metaClient.pages = [{
+      accessToken: "page-token-before-expiry",
+      id: "100000000000042",
+      instagramBusinessAccountId: null,
+      name: "Página com validade",
+      profileImageUrl: null,
+      tasks: [],
+      username: null,
+    }];
+    expect((await callback(account.cookie, await startOAuth(account.cookie))).status).toBe(302);
+    const original = (await listAccounts(account.cookie))[0]!;
+    await pool.query(
+      `UPDATE social_account_credentials
+       SET access_token_expires_at = now() - interval '1 second'
+       WHERE social_account_id = $1::uuid`,
+      [original.id],
+    );
+    expect((await listAccounts(account.cookie))[0]?.status).toBe("expired");
+
+    metaClient.pages[0] = {
+      ...metaClient.pages[0]!,
+      accessToken: "page-token-after-expiry",
+      name: "Página renovada",
+    };
+    expect((await callback(account.cookie, await startOAuth(account.cookie))).status).toBe(302);
+    const renewed = await listAccounts(account.cookie);
+    expect(renewed).toHaveLength(1);
+    expect(renewed[0]).toEqual(expect.objectContaining({
+      disconnectedAt: null,
+      displayName: "Página renovada",
+      id: original.id,
+      status: "connected",
+      tokenExpiresAt: null,
+    }));
+    const credential = await pool.query<{ access_token_encrypted: Buffer }>(
+      `SELECT access_token_encrypted FROM social_account_credentials
+       WHERE social_account_id = $1::uuid`,
+      [original.id],
+    );
+    const encrypted = credential.rows[0]!.access_token_encrypted.toString("utf8");
+    expect(encrypted).not.toContain("page-token-after-expiry");
+    expect(cipher.decryptSecret(encrypted)).toBe("page-token-after-expiry");
+  });
+
+  it("reconecta a mesma Page em A sem modificar a conta homônima de B", async () => {
+    const account = await register();
+    const page = {
+      accessToken: "page-token-a-original",
+      id: "100000000000041",
+      instagramBusinessAccountId: null,
+      name: "Página compartilhável",
+      profileImageUrl: null,
+      tasks: [],
+      username: null,
+    } satisfies MetaPage;
+    metaClient.pages = [page];
+    expect((await callback(account.cookie, await startOAuth(account.cookie))).status).toBe(302);
+    const accountA = (await listAccounts(account.cookie))[0]!;
+
+    const workspaceB = await addWorkspace(account.session.user.id);
+    const selectedB = await selectWorkspace(account.cookie, workspaceB.tenantId);
+    metaClient.pages = [{ ...page, accessToken: "page-token-b" }];
+    expect((await callback(selectedB.cookie, await startOAuth(selectedB.cookie))).status).toBe(302);
+    const accountB = (await listAccounts(selectedB.cookie))[0]!;
+    expect(accountB.id).not.toBe(accountA.id);
+
+    const selectedA = await selectWorkspace(selectedB.cookie, account.session.tenant.id);
+    metaClient.pages = [{ ...page, accessToken: "page-token-a-renewed", name: "Página atualizada A" }];
+    expect((await callback(selectedA.cookie, await startOAuth(selectedA.cookie))).status).toBe(302);
+    const afterA = await listAccounts(selectedA.cookie);
+    expect(afterA).toHaveLength(1);
+    expect(afterA[0]).toEqual(expect.objectContaining({
+      displayName: "Página atualizada A",
+      id: accountA.id,
+      status: "connected",
+    }));
+
+    const stored = await pool.query<{
+      access_token_encrypted: Buffer;
+      id: string;
+      tenant_id: string;
+    }>(`
+      SELECT account_row.id, account_row.tenant_id, credential_row.access_token_encrypted
+      FROM social_accounts account_row
+      JOIN social_account_credentials credential_row
+        ON credential_row.social_account_id = account_row.id
+      ORDER BY account_row.tenant_id
+    `);
+    expect(stored.rows).toHaveLength(2);
+    expect(cipher.decryptSecret(stored.rows.find((row) => row.id === accountA.id)!.access_token_encrypted.toString("utf8"))).toBe("page-token-a-renewed");
+    expect(cipher.decryptSecret(stored.rows.find((row) => row.id === accountB.id)!.access_token_encrypted.toString("utf8"))).toBe("page-token-b");
   });
 
   it("preserva Instagram existente quando o enriquecimento falha transitoriamente", async () => {
@@ -908,6 +1069,22 @@ describe("OAuth Meta HTTP com PostgreSQL", () => {
       { headers: { Cookie: account.cookie }, method: "DELETE" },
     );
     expect(oneDisconnected.status).toBe(200);
+    const firstDisconnect = (await oneDisconnected.json()) as SocialAccount;
+    const repeated = await Promise.all([
+      apiFetch(`${baseUrl}/social-accounts/${facebook.id}`, {
+        headers: { Cookie: account.cookie }, method: "DELETE",
+      }),
+      apiFetch(`${baseUrl}/social-accounts/${facebook.id}`, {
+        headers: { Cookie: account.cookie }, method: "DELETE",
+      }),
+    ]);
+    expect(repeated.map((response) => response.status)).toEqual([200, 200]);
+    for (const response of repeated) {
+      const body = (await response.json()) as SocialAccount;
+      expect(body.status).toBe("revoked");
+      expect(body.disconnectedAt).toBe(firstDisconnect.disconnectedAt);
+      expect(JSON.stringify(body)).not.toMatch(/accessToken|refreshToken|Encrypted|providerMetadata/);
+    }
     const stillActive = await pool.query<{
       access_token_encrypted: Buffer | null;
       active_accounts: number;

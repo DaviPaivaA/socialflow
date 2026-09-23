@@ -313,6 +313,14 @@ modo mock, nenhum OAuth externo é iniciado. Contas controladas para
 desenvolvimento e testes são inseridas diretamente pelo service/repository,
 nunca por um endpoint público de criação.
 
+Na gestão de Canais, contas conectadas podem ser desconectadas. Contas Meta
+`expired`, `revoked` ou `error` reutilizam o OAuth existente para reconexão;
+`pending` não inicia OAuth automaticamente e TikTok continua sem OAuth. A API
+calcula `expired` quando `tokenExpiresAt` da credencial é igual ou anterior ao
+instante atual; expiração ausente não é presumida. A desconexão apaga os tokens
+da conta e só revoga a autorização compartilhada quando não há outra conta
+ativa. Não há polling da Meta nem renovação automática de tokens nesta etapa.
+
 ## OAuth Meta (Etapa 5B.1)
 
 A integração usa **Instagram API with Facebook Login** e a Graph API

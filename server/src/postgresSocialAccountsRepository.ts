@@ -117,13 +117,19 @@ function databaseStatus(status: Exclude<SocialAccountStatus, "revoked">): string
   return status === "connected" ? "active" : status;
 }
 
-function publicStatus(
+export function deriveSocialAccountStatus(
   value: unknown,
   active: unknown,
   disconnectedAt: string | null,
+  tokenExpiresAt: string | null,
+  now = Date.now(),
 ): SocialAccountStatus | null {
   if (active === false) return disconnectedAt ? "revoked" : "error";
-  if (value === "active") return "connected";
+  if (value === "active") {
+    return tokenExpiresAt !== null && Date.parse(tokenExpiresAt) <= now
+      ? "expired"
+      : "connected";
+  }
   if (
     value === "pending" ||
     value === "expired" ||
@@ -138,10 +144,12 @@ function publicStatus(
 function mapSocialAccountRow(row: SocialAccountRow): SocialAccount {
   const provider = providerFromAccountType(row.account_type);
   const disconnectedAt = normalizeTimestamp(row.disconnected_at);
-  const status = publicStatus(
+  const tokenExpiresAt = normalizeTimestamp(row.access_token_expires_at);
+  const status = deriveSocialAccountStatus(
     row.connection_status,
     row.is_active,
     disconnectedAt,
+    tokenExpiresAt,
   );
   const displayName =
     typeof row.display_name === "string" && row.display_name.trim()
@@ -159,7 +167,7 @@ function mapSocialAccountRow(row: SocialAccountRow): SocialAccount {
     providerAccountId: row.external_account_id,
     scopes: row.scopes,
     status,
-    tokenExpiresAt: normalizeTimestamp(row.access_token_expires_at),
+    tokenExpiresAt,
     updatedAt: normalizeTimestamp(row.updated_at),
     username: row.username,
   };
