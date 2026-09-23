@@ -50,6 +50,10 @@ import {
 } from "./metaOAuthService.ts";
 import { PostgresMetaOAuthStateRepository } from "./metaOAuthStateRepository.ts";
 import { resolveClientAddress } from "./clientAddress.ts";
+import { MediaAssetsService } from "./mediaAssetsService.ts";
+import { PostgresMediaAssetsRepository } from "./mediaAssetsRepository.ts";
+import { MediaRequestError } from "./mediaErrors.ts";
+import type { MediaLimits } from "./mediaStorage.ts";
 
 const MAX_BODY_SIZE = 1_048_576;
 
@@ -63,6 +67,8 @@ type ApiServerOptions = {
   logger?: ApiLogger;
   metaOAuth?: MetaOAuthConfig;
   metaOAuthClient?: MetaOAuthProviderClient;
+  mediaLimits?: MediaLimits;
+  mediaStoragePath?: string;
   pool: Pool;
   sessionCookie: SessionCookieConfig;
   sessionTtlSeconds: number;
@@ -248,6 +254,8 @@ export function createApiServer({
   logger = console,
   metaOAuth = DISABLED_META_OAUTH_CONFIG,
   metaOAuthClient,
+  mediaLimits = { imageBytes: 25 * 1024 * 1024, videoBytes: 250 * 1024 * 1024 },
+  mediaStoragePath = "data/media",
   pool,
   sessionCookie,
   sessionTtlSeconds,
@@ -258,6 +266,11 @@ export function createApiServer({
   const authRateLimiter = new InMemoryRateLimiter(authRateLimit);
   const postsContextResolver = new AuthenticatedPostsContextResolver(authService);
   const postsStore = new PostgresPostsStore(pool);
+  const mediaAssetsService = new MediaAssetsService(
+    new PostgresMediaAssetsRepository(pool),
+    mediaStoragePath,
+    mediaLimits,
+  );
   const socialAccountsRepository = new PostgresSocialAccountsRepository(pool);
   const socialAccountsService = new SocialAccountsService(
     socialAccountsRepository,
@@ -291,6 +304,9 @@ export function createApiServer({
         response.setHeader("Cache-Control", "no-store");
       }
       if (url.pathname === "/posts") {
+        response.setHeader("Cache-Control", "no-store");
+      }
+      if (url.pathname === "/media-assets" || url.pathname.startsWith("/media-assets/")) {
         response.setHeader("Cache-Control", "no-store");
       }
 
@@ -528,6 +544,31 @@ export function createApiServer({
         return;
       }
 
+      if (url.pathname === "/media-assets" && method === "GET") {
+        const context = await postsContextResolver.resolve(request);
+        sendJson(response, 200, { mediaAssets: await mediaAssetsService.list(context) });
+        return;
+      }
+
+      if (url.pathname === "/media-assets" && method === "POST") {
+        const context = await postsContextResolver.resolve(request);
+        sendJson(response, 201, await mediaAssetsService.upload(request, context));
+        return;
+      }
+
+      const mediaAssetMatch = /^\/media-assets\/([^/]+)$/.exec(url.pathname);
+      if (mediaAssetMatch) {
+        const context = await postsContextResolver.resolve(request);
+        const id = mediaAssetMatch[1];
+        if (!isUuid(id)) {
+          throw new RequestError(400, "invalid_media_asset_id", "O identificador da mídia é inválido.", ["id"]);
+        }
+        if (method === "GET") {
+          sendJson(response, 200, await mediaAssetsService.get(context, id));
+          return;
+        }
+      }
+
       if (url.pathname === "/social-accounts" && method === "GET") {
         const context = await postsContextResolver.resolve(request);
         sendJson(response, 200, {
@@ -587,6 +628,8 @@ export function createApiServer({
         url.pathname === "/health" ||
         url.pathname === "/posts" ||
         url.pathname === "/social-accounts" ||
+        url.pathname === "/media-assets" ||
+        mediaAssetMatch ||
         socialAccountMatch ||
         url.pathname.startsWith("/auth/")
       ) {
@@ -594,6 +637,10 @@ export function createApiServer({
           "Allow",
           url.pathname === "/posts"
             ? "GET, POST, OPTIONS"
+            : url.pathname === "/media-assets"
+              ? "GET, POST, OPTIONS"
+            : mediaAssetMatch
+              ? "GET, OPTIONS"
             : url.pathname.startsWith("/social-accounts/")
               ? "GET, PATCH, DELETE, OPTIONS"
             : url.pathname === "/social-accounts"
@@ -620,6 +667,13 @@ export function createApiServer({
     } catch (error) {
       if (error instanceof RequestError) {
         sendRequestError(response, error);
+        return;
+      }
+
+      if (error instanceof MediaRequestError) {
+        sendJson(response, error.status, {
+          error: { code: error.code, message: error.message },
+        });
         return;
       }
 

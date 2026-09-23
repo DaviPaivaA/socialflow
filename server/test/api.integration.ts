@@ -183,7 +183,8 @@ async function expectOfficialSchema(pool: Pool) {
           'oauth_connections',
           'oauth_authorization_requests',
           'social_accounts',
-          'social_account_credentials'
+          'social_account_credentials',
+          'media_assets'
         ]
       )
   `);
@@ -211,6 +212,11 @@ async function expectOfficialSchema(pool: Pool) {
   expect(byColumn.has("posts.scheduled_at")).toBe(false);
   expect(byColumn.has("posts.channels")).toBe(false);
   expect(byColumn.has("posts.color")).toBe(false);
+  expect(byColumn.get("media_assets.id")?.data_type).toBe("uuid");
+  expect(byColumn.get("media_assets.tenant_id")?.data_type).toBe("uuid");
+  expect(byColumn.get("media_assets.uploaded_by_user_id")?.data_type).toBe("uuid");
+  expect(byColumn.get("media_assets.size_bytes")?.data_type).toBe("bigint");
+  expect(byColumn.get("media_assets.created_at")?.data_type).toBe("timestamp with time zone");
   expect(byColumn.get("social_accounts.id")?.data_type).toBe("uuid");
   expect(byColumn.get("social_accounts.tenant_id")?.data_type).toBe("uuid");
   expect(byColumn.get("social_accounts.oauth_connection_id")?.data_type).toBe(
@@ -411,7 +417,7 @@ describe("API com PostgreSQL e schema oficial", () => {
       const migrationResult = await migrationPool.query<{ count: string }>(`
         SELECT count(*)::text AS count FROM schema_migrations
       `);
-      expect(migrationResult.rows[0]?.count).toBe("7");
+      expect(migrationResult.rows[0]?.count).toBe("8");
 
       const apiA = await startApi(databaseUrl, schema);
       runningApis.push(apiA);
@@ -610,6 +616,7 @@ describe("API com PostgreSQL e schema oficial", () => {
         "005_add_social_accounts.sql",
         "006_add_pending_social_connection_status.sql",
         "007_add_oauth_authorization_requests.sql",
+        "008_add_media_assets.sql",
       ]);
     } finally {
       await pool.end();

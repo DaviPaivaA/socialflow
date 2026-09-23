@@ -3,6 +3,7 @@ dist/
 .env*
 !.env.example
 dist-server/
+/data/
 .DS_Store
 npm-debug.log*
 *.tsbuildinfo

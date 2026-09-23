@@ -2,6 +2,7 @@ import { createApiServer } from "./app.ts";
 import { loadServerConfig } from "./config.ts";
 import { createDatabasePool } from "./database.ts";
 import { SocialTokenCipher } from "./socialTokenCrypto.ts";
+import { ensureMediaStorageReady } from "./mediaStorage.ts";
 
 const config = loadServerConfig();
 const pool = createDatabasePool(config.databaseUrl);
@@ -9,6 +10,8 @@ const server = createApiServer({
   authRateLimit: config.authRateLimit,
   corsOrigin: config.corsOrigin,
   metaOAuth: config.metaOAuth,
+  mediaLimits: config.mediaLimits,
+  mediaStoragePath: config.mediaStoragePath,
   pool,
   sessionCookie: config.sessionCookie,
   sessionTtlSeconds: config.sessionTtlSeconds,
@@ -35,9 +38,15 @@ server.once("error", (error) => {
   });
 });
 
-server.listen(config.port, config.host, () => {
-  console.log(`Backend disponível em http://${config.host}:${config.port}.`);
-});
+try {
+  await ensureMediaStorageReady(config.mediaStoragePath);
+  server.listen(config.port, config.host, () => {
+    console.log(`Backend disponível em http://${config.host}:${config.port}.`);
+  });
+} catch (error) {
+  await pool.end();
+  throw error;
+}
 
 process.once("SIGINT", () => {
   void shutdown("SIGINT").catch((error: unknown) => {

@@ -151,6 +151,35 @@ cookie `SameSite=Lax` permaneça first-party. A API oferece:
 - `GET /social-accounts/:id`, que consulta uma conta no mesmo Workspace;
 - `PATCH /social-accounts/:id`, que altera apenas nome, username e imagem;
 - `DELETE /social-accounts/:id`, que revoga a conta e apaga suas credenciais.
+- `POST /media-assets`, upload autenticado de um arquivo no campo multipart
+  `file` (resposta `201` com metadados seguros);
+- `GET /media-assets` e `GET /media-assets/:id`, leitura dos metadados somente
+  do Workspace autenticado.
+
+### Mídia local — Etapa 6A
+
+Configure `MEDIA_STORAGE_PATH` para um diretório persistente e gravável pela
+API. Em desenvolvimento o padrão é `./data/media` (ignorado pelo Git); em
+produção a variável é obrigatória. O backend cria e testa o diretório antes de
+escutar conexões. Os limites padrão são `MEDIA_MAX_IMAGE_BYTES=26214400` (25 MiB)
+e `MEDIA_MAX_VIDEO_BYTES=262144000` (250 MiB), ajustáveis no ambiente. Aceitos:
+JPEG, PNG e WebP; MP4 e QuickTime/MOV. A API confirma a assinatura do arquivo
+e exige que ela corresponda ao MIME declarado. O upload usa streaming para
+arquivo temporário, calcula SHA-256, move o arquivo para
+`<MEDIA_STORAGE_PATH>/<tenant UUID>/<media UUID>.<extensão>` e só então grava os
+metadados em `media_assets`. Se o INSERT falhar, a API tenta remover o arquivo
+movido. O nome original é apenas metadado sanitizado; não define o caminho.
+`GET` nunca expõe `storage_key`, SHA-256 ou caminhos internos. Não há URL de
+conteúdo/pública nesta etapa; mídia ainda não é vinculada ao Post e não é
+publicada na Meta.
+
+No futuro deploy Docker, use por exemplo `MEDIA_STORAGE_PATH=/app/data/media`
+na API e um bind mount persistente como `./data/media:/app/data/media` para
+backup; não monte o diretório como raiz estática pública. No Nginx, a rota
+`/media-assets` precisará aceitar corpos acima de 250 MiB mais o overhead
+multipart (`client_max_body_size`, por exemplo 251m) e, para preservar o
+streaming até a API, `proxy_request_buffering off`. Ajuste esses parâmetros
+na configuração existente do proxy, preservando os headers e regras atuais.
 
 `GET /posts` e `POST /posts` retornam `401` sem sessão válida. `tenantId` e
 `authorUserId` nunca são aceitos como autoridade do cliente: são derivados do

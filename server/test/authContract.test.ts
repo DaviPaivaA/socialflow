@@ -119,6 +119,20 @@ describe("configuração de sessão", () => {
     SOCIAL_TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 4).toString("base64"),
   };
 
+  it("exige storage absoluto em produção e valida os limites de mídia", () => {
+    const production = {
+      ...baseEnvironment,
+      CORS_ORIGIN: "https://app.example.com",
+      NODE_ENV: "production",
+    };
+    expect(() => loadServerConfig(production)).toThrow("MEDIA_STORAGE_PATH deve ser definida em produção");
+    expect(() => loadServerConfig({ ...production, MEDIA_STORAGE_PATH: "./data/media" })).toThrow("MEDIA_STORAGE_PATH deve ser um caminho absoluto");
+    const config = loadServerConfig({ ...production, MEDIA_STORAGE_PATH: "/srv/socialflow/media" });
+    expect(config.mediaLimits).toEqual({ imageBytes: 25 * 1024 * 1024, videoBytes: 250 * 1024 * 1024 });
+    expect(() => loadServerConfig({ ...baseEnvironment, MEDIA_MAX_IMAGE_BYTES: "0" })).toThrow("MEDIA_MAX_IMAGE_BYTES");
+    expect(() => loadServerConfig({ ...baseEnvironment, MEDIA_MAX_IMAGE_BYTES: "100", MEDIA_MAX_VIDEO_BYTES: "50" })).toThrow("não pode exceder");
+  });
+
   it("exige cookie Secure em produção", () => {
     expect(() =>
       loadServerConfig({

@@ -2,6 +2,8 @@ import type { SessionCookieConfig } from "./sessionCookie.ts";
 import type { RateLimitConfig } from "./rateLimiter.ts";
 import { parseSocialTokenEncryptionKey } from "./socialTokenCrypto.ts";
 import type { MetaOAuthConfig } from "./metaOAuthClient.ts";
+import { isAbsolute, resolve } from "node:path";
+import type { MediaLimits } from "./mediaStorage.ts";
 
 export type DatabaseConfig = {
   databaseUrl: string;
@@ -11,6 +13,8 @@ export type ServerConfig = DatabaseConfig & {
   authRateLimit: RateLimitConfig;
   corsOrigin: string;
   host: string;
+  mediaLimits: MediaLimits;
+  mediaStoragePath: string;
   metaOAuth: MetaOAuthConfig;
   port: number;
   sessionCookie: SessionCookieConfig;
@@ -230,6 +234,18 @@ export function loadServerConfig(
     );
   }
   const sessionTtlHours = parseSessionTtlHours(environment.SESSION_TTL_HOURS);
+  const mediaStoragePath = environment.MEDIA_STORAGE_PATH?.trim();
+  if (production && !mediaStoragePath) {
+    throw new Error("MEDIA_STORAGE_PATH deve ser definida em produção.");
+  }
+  if (production && mediaStoragePath && !isAbsolute(mediaStoragePath)) {
+    throw new Error("MEDIA_STORAGE_PATH deve ser um caminho absoluto em produção.");
+  }
+  const imageBytes = parseInteger("MEDIA_MAX_IMAGE_BYTES", environment.MEDIA_MAX_IMAGE_BYTES, 25 * 1024 * 1024, 250 * 1024 * 1024);
+  const videoBytes = parseInteger("MEDIA_MAX_VIDEO_BYTES", environment.MEDIA_MAX_VIDEO_BYTES, 250 * 1024 * 1024, 1024 * 1024 * 1024);
+  if (imageBytes > videoBytes) {
+    throw new Error("MEDIA_MAX_IMAGE_BYTES não pode exceder MEDIA_MAX_VIDEO_BYTES.");
+  }
   const rateLimitWindowSeconds = parseInteger(
     "AUTH_RATE_LIMIT_WINDOW_SECONDS",
     environment.AUTH_RATE_LIMIT_WINDOW_SECONDS,
@@ -250,6 +266,11 @@ export function loadServerConfig(
     },
     corsOrigin: parseCorsOrigin(environment.CORS_ORIGIN),
     host: environment.HOST?.trim() || "127.0.0.1",
+    mediaLimits: {
+      imageBytes,
+      videoBytes,
+    },
+    mediaStoragePath: resolve(mediaStoragePath || "data/media"),
     metaOAuth,
     port: parsePort(environment.PORT),
     sessionCookie: {
