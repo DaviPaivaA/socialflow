@@ -12,9 +12,18 @@ export type CreateMediaAssetRecord = {
   storageKey: string;
 };
 
+export type StoredMediaAsset = {
+  id: string;
+  mediaType: MediaType;
+  mimeType: string;
+  sizeBytes: number;
+  storageKey: string;
+};
+
 export interface MediaAssetsRepository {
   create(context: PostsContext, input: CreateMediaAssetRecord): Promise<MediaAsset>;
   findById(context: PostsContext, id: string): Promise<MediaAsset | null>;
+  findStoredById(context: PostsContext, id: string): Promise<StoredMediaAsset | null>;
   list(context: PostsContext): Promise<MediaAsset[]>;
 }
 
@@ -31,6 +40,14 @@ type MediaRow = QueryResultRow & {
   updated_at: Date;
   uploaded_by_user_id: string;
   width: number | null;
+};
+
+type StoredMediaRow = QueryResultRow & {
+  id: string;
+  media_type: MediaType;
+  mime_type: string;
+  size_bytes: string;
+  storage_key: string;
 };
 
 const PUBLIC_FIELDS = `
@@ -97,5 +114,21 @@ export class PostgresMediaAssetsRepository implements MediaAssetsRepository {
       WHERE tenant_id = $1::uuid AND id = $2::uuid AND deleted_at IS NULL
     `, [context.tenantId, id]);
     return result.rows[0] ? mapMediaRow(result.rows[0]) : null;
+  }
+
+  async findStoredById(context: PostsContext, id: string): Promise<StoredMediaAsset | null> {
+    const result = await this.pool.query<StoredMediaRow>(`
+      SELECT id, media_type, mime_type, size_bytes, storage_key
+      FROM media_assets
+      WHERE tenant_id = $1::uuid AND id = $2::uuid AND deleted_at IS NULL
+    `, [context.tenantId, id]);
+    const row = result.rows[0];
+    return row ? {
+      id: row.id,
+      mediaType: row.media_type,
+      mimeType: row.mime_type,
+      sizeBytes: Number(row.size_bytes),
+      storageKey: row.storage_key,
+    } : null;
   }
 }

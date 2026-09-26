@@ -9,3 +9,7 @@ npm-debug.log*
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
+
+# Superpowers - documentos locais
+docs/superpowers/plans/
+docs/superpowers/specs/

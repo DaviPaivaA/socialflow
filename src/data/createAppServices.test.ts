@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 describe("configuração dos serviços em produção", () => {
+  it("injeta repository HTTP ou mock de mídia conforme o modo, sem nova variável", async () => {
+    const { createAppServices } = await vi.importActual<typeof import("./createAppServices")>("./createAppServices");
+    expect(createAppServices({ mode: "mock" }).mediaAssetsRepository.constructor.name).toBe("MockMediaAssetsRepository");
+    expect(createAppServices({ mode: "http", apiUrl: "https://api.example.test" }).mediaAssetsRepository.constructor.name)
+      .toBe("HttpMediaAssetsRepository");
+  });
+
   it("não aceita fallback silencioso para repositórios mock", async () => {
     const { createConfiguredAppServices } = await vi.importActual<
       typeof import("./createAppServices")
@@ -28,5 +35,6 @@ describe("configuração dos serviços em produção", () => {
     expect(createConfiguredAppServices().postsRepository.constructor.name).toBe(
       "HttpPostsRepository",
     );
+    expect(createConfiguredAppServices().mediaAssetsRepository.constructor.name).toBe("HttpMediaAssetsRepository");
   });
 });

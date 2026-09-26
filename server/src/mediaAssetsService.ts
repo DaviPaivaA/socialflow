@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { MediaAsset } from "../../shared/mediaContract.ts";
-import { MediaRequestError, MediaStorageError } from "./mediaErrors.ts";
+import { resolveMediaContentFile } from "./mediaContent.ts";
+import { MediaContentUnavailableError, MediaRequestError, MediaStorageError } from "./mediaErrors.ts";
 import type { MediaAssetsRepository } from "./mediaAssetsRepository.ts";
 import {
   moveMediaToFinalLocation,
@@ -30,6 +31,25 @@ export class MediaAssetsService {
     const asset = await this.repository.findById(context, id);
     if (!asset) throw new MediaRequestError(404, "media_asset_not_found", "A mídia não foi encontrada.");
     return asset;
+  }
+
+  async getContent(context: PostsContext, id: string): Promise<{ path: string; mimeType: string; sizeBytes: number }> {
+    const asset = await this.repository.findStoredById(context, id);
+    if (!asset) throw new MediaRequestError(404, "media_asset_not_found", "A mídia não foi encontrada.");
+    try {
+      const expectedPrefix = `${context.tenantId}/${asset.id}.`;
+      const extension = asset.storageKey.slice(expectedPrefix.length);
+      if (
+        !asset.storageKey.startsWith(expectedPrefix) ||
+        !["jpg", "png", "webp", "mp4", "mov"].includes(extension)
+      ) {
+        throw new Error("Invalid storage key for asset");
+      }
+      const file = await resolveMediaContentFile(this.root, asset.storageKey);
+      return { path: file.path, mimeType: asset.mimeType, sizeBytes: file.sizeBytes };
+    } catch {
+      throw new MediaContentUnavailableError();
+    }
   }
 
   async upload(request: IncomingMessage, context: PostsContext): Promise<MediaAsset> {

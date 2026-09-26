@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -202,6 +202,111 @@ describe("media_assets com PostgreSQL real", () => {
       await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       await admin.end();
       await rm(storagePath, { recursive: true, force: true });
+    }
+  });
+
+  it("serve conteúdo somente ao Workspace da mídia e não distingue IDs ausentes ou excluídos", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
+    const admin = new Pool({ connectionString: databaseUrl });
+    const pool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schema},public` });
+    const storagePath = await mkdtemp(join(tmpdir(), "socialflow-content-integration-"));
+    const outsidePath = await mkdtemp(join(tmpdir(), "socialflow-content-outside-"));
+    let running: Awaited<ReturnType<typeof startServer>> | null = null;
+    try {
+      await admin.query(`CREATE SCHEMA "${schema}"`);
+      await runMigrations(pool);
+      await ensureMediaStorageReady(storagePath);
+      running = await startServer(pool, storagePath);
+      const { baseUrl } = running;
+      const a = await register(baseUrl, `content-a-${randomUUID()}@example.test`);
+      const b = await register(baseUrl, `content-b-${randomUUID()}@example.test`);
+      const created = await apiFetch(`${baseUrl}/media-assets`, {
+        method: "POST", body: uploadForm(JPEG, "image/jpeg"),
+      }, a.cookie);
+      expect(created.status).toBe(201);
+      const asset = await created.json() as MediaAsset;
+      const endpoint = `${baseUrl}/media-assets/${asset.id}/content`;
+
+      expect((await apiFetch(endpoint)).status).toBe(401);
+      const invalid = await apiFetch(`${baseUrl}/media-assets/not-a-uuid/content`, {}, a.cookie);
+      expect(invalid.status).toBe(400);
+      expect((await invalid.json() as { error: { code: string } }).error.code).toBe("invalid_media_asset_id");
+
+      const own = await apiFetch(endpoint, {}, a.cookie);
+      expect(own.status).toBe(200);
+      expect(own.headers.get("cache-control")).toBe("private, no-store");
+      expect(own.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(own.headers.get("accept-ranges")).toBe("bytes");
+      expect(own.headers.get("content-type")).toBe("image/jpeg");
+      expect(Buffer.from(await own.arrayBuffer())).toEqual(JPEG);
+
+      const head = await apiFetch(endpoint, { method: "HEAD", headers: { Range: "bytes=0-3" } }, a.cookie);
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-length")).toBe(String(JPEG.length));
+      expect(head.headers.get("content-range")).toBeNull();
+      expect(await head.text()).toBe("");
+      const firstBytes = await apiFetch(endpoint, { headers: { Range: "bytes=0-3" } }, a.cookie);
+      expect(firstBytes.status).toBe(206);
+      expect(firstBytes.headers.get("content-range")).toBe(`bytes 0-3/${JPEG.length}`);
+      expect(firstBytes.headers.get("content-length")).toBe("4");
+      expect(Buffer.from(await firstBytes.arrayBuffer())).toEqual(JPEG.subarray(0, 4));
+      const longSuffix = await apiFetch(endpoint, { headers: { Range: "bytes=-100" } }, a.cookie);
+      expect(longSuffix.status).toBe(206);
+      expect(longSuffix.headers.get("content-range")).toBe(`bytes 0-${JPEG.length - 1}/${JPEG.length}`);
+      expect(Buffer.from(await longSuffix.arrayBuffer())).toEqual(JPEG);
+      for (const range of ["bytes=-0", "bytes=0-1,3-4"]) {
+        const invalidRange = await apiFetch(endpoint, { headers: { Range: range } }, a.cookie);
+        expect(invalidRange.status).toBe(416);
+        expect(invalidRange.headers.get("content-range")).toBe(`bytes */${JPEG.length}`);
+      }
+
+      const notFoundBody = { error: { code: "media_asset_not_found", message: "A mídia não foi encontrada." } };
+      const crossTenant = await apiFetch(endpoint, {}, b.cookie);
+      expect(crossTenant.status).toBe(404);
+      expect(await crossTenant.json()).toEqual(notFoundBody);
+      const absent = await apiFetch(`${baseUrl}/media-assets/${randomUUID()}/content`, {}, a.cookie);
+      expect(absent.status).toBe(404);
+      expect(await absent.json()).toEqual(notFoundBody);
+
+      await pool.query("UPDATE media_assets SET deleted_at = now() WHERE id = $1::uuid", [asset.id]);
+      const deleted = await apiFetch(endpoint, {}, a.cookie);
+      expect(deleted.status).toBe(404);
+      expect(await deleted.json()).toEqual(notFoundBody);
+
+      await pool.query("UPDATE media_assets SET deleted_at = NULL WHERE id = $1::uuid", [asset.id]);
+      const location = await pool.query<{ storage_key: string }>("SELECT storage_key FROM media_assets WHERE id = $1::uuid", [asset.id]);
+      const physicalPath = join(storagePath, location.rows[0]!.storage_key);
+      await rm(physicalPath);
+      const missingFile = await apiFetch(endpoint, {}, a.cookie);
+      expect(missingFile.status).toBe(500);
+      const unavailableBody = await missingFile.text();
+      expect(JSON.parse(unavailableBody)).toEqual({
+        error: { code: "media_content_unavailable", message: "Não foi possível acessar o conteúdo da mídia." },
+      });
+      expect(unavailableBody).not.toMatch(/\/tmp|storage_key|sha256|path/i);
+
+      const outsideFile = join(outsidePath, "outside.jpg");
+      await writeFile(outsideFile, JPEG);
+      await symlink(outsideFile, physicalPath);
+      const escapedLink = await apiFetch(endpoint, {}, a.cookie);
+      expect(escapedLink.status).toBe(500);
+      expect(await escapedLink.json()).toEqual(JSON.parse(unavailableBody));
+
+      const foreignKey = `${b.tenant.id}/${randomUUID()}.jpg`;
+      await mkdir(join(storagePath, b.tenant.id), { recursive: true });
+      await writeFile(join(storagePath, foreignKey), PNG);
+      await pool.query("UPDATE media_assets SET storage_key = $1 WHERE id = $2::uuid", [foreignKey, asset.id]);
+      const mismatchedTenantStorage = await apiFetch(endpoint, {}, a.cookie);
+      expect(mismatchedTenantStorage.status).toBe(500);
+      expect((await mismatchedTenantStorage.json() as { error: { code: string } }).error.code).toBe("media_content_unavailable");
+    } finally {
+      if (running) await stopServer(running.server);
+      await pool.end();
+      await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      await admin.end();
+      await rm(storagePath, { recursive: true, force: true });
+      await rm(outsidePath, { recursive: true, force: true });
     }
   });
 });

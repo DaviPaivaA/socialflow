@@ -6,6 +6,9 @@ import {
   demoAuthSession,
   MockAuthRepository,
 } from "./auth/MockAuthRepository";
+import { HttpMediaAssetsRepository } from "./media/HttpMediaAssetsRepository";
+import { MockMediaAssetsRepository } from "./media/MockMediaAssetsRepository";
+import type { MediaAssetsRepository } from "./media/MediaAssetsRepository";
 import { HttpPostsRepository } from "./posts/HttpPostsRepository";
 import { MockPostsRepository } from "./posts/MockPostsRepository";
 import type { PostsRepository } from "./posts/PostsRepository";
@@ -16,6 +19,7 @@ import type { SocialAccountsRepository } from "./socialAccounts/SocialAccountsRe
 export type AppServices = {
   authRepository: AuthRepository;
   initialAuthSession?: AuthSession;
+  mediaAssetsRepository: MediaAssetsRepository;
   postsRepository: PostsRepository;
   socialAccountsRepository: SocialAccountsRepository;
 };
@@ -36,6 +40,7 @@ export function createAppServices({
     return {
       authRepository: new MockAuthRepository(demoAuthSession),
       initialAuthSession: demoAuthSession,
+      mediaAssetsRepository: new MockMediaAssetsRepository(),
       postsRepository: new MockPostsRepository(),
       socialAccountsRepository: new MockSocialAccountsRepository(),
     };
@@ -53,6 +58,7 @@ export function createAppServices({
     });
     return {
       authRepository: new HttpAuthRepository(apiClient),
+      mediaAssetsRepository: new HttpMediaAssetsRepository(apiClient),
       postsRepository: new HttpPostsRepository(apiClient),
       socialAccountsRepository: new HttpSocialAccountsRepository(apiClient),
     };

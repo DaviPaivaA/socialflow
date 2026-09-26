@@ -13,6 +13,9 @@ import App from "./App";
 import { ApiClient } from "./data/api/apiClient";
 import { initialPosts } from "./data/mockData";
 import { MockAuthRepository, demoAuthSession } from "./data/auth/MockAuthRepository";
+import type { AuthRepository } from "./data/auth/AuthRepository";
+import type { MediaAssetsRepository } from "./data/media/MediaAssetsRepository";
+import type { MediaAsset } from "../shared/mediaContract";
 import { HttpPostsRepository } from "./data/posts/HttpPostsRepository";
 import type { PostsRepository } from "./data/posts/PostsRepository";
 import { getPostTitle } from "./domain/postPresentation";
@@ -44,6 +47,23 @@ const createdPost: Post = {
   caption: "Publicação criada após a resposta controlada.",
   scheduledFor: "2098-01-14T11:00:00-03:00",
 };
+
+const composerMediaAsset: MediaAsset = {
+  createdAt: "2026-09-25T12:00:00.000Z", durationMs: null, height: null,
+  id: "70000000-0000-4000-8000-000000000001", mediaType: "image", mimeType: "image/jpeg",
+  originalFilename: "foto-do-workspace.jpg", sizeBytes: 1024,
+  tenantId: demoAuthSession.tenant.id, updatedAt: "2026-09-25T12:00:00.000Z",
+  uploadedByUserId: demoAuthSession.user.id, width: null,
+};
+
+function mediaRepository(overrides: Partial<MediaAssetsRepository> = {}): MediaAssetsRepository {
+  return {
+    list: vi.fn().mockResolvedValue([]),
+    upload: vi.fn().mockResolvedValue(composerMediaAsset),
+    contentUrl: vi.fn((id: string) => `https://api.test/media-assets/${id}/content`),
+    ...overrides,
+  };
+}
 
 describe("SocialFlow", () => {
   beforeEach(() => {
@@ -1322,6 +1342,7 @@ describe("SocialFlow", () => {
     const revisedDate = "2026-08-20";
     const expectedOriginalPayload = {
       caption: originalCaption,
+      mediaAssetIds: [],
       scheduledFor: new Date(2026, 7, 14, 11, 15).toISOString(),
       status: "scheduled",
       title: "Versão original do Composer",
@@ -1557,5 +1578,76 @@ describe("SocialFlow", () => {
 
     await waitFor(() => expect(window.location.hash).toBe("#/agenda"));
     expect(sidebar).not.toHaveClass("mobile-open");
+  });
+
+  it("envia ao PostsRepository somente o ID da mídia selecionada no Composer", async () => {
+    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createdPost) };
+    const source = mediaRepository({ list: vi.fn().mockResolvedValue([composerMediaAsset]) });
+    render(<App repository={postsRepository} mediaAssetsRepository={source} />);
+    await screen.findByText("Nenhuma publicação agendada");
+    fireEvent.click(screen.getByRole("button", { name: /Criar publicação/i }));
+    const card = await screen.findByRole("button", { name: /Selecionar foto-do-workspace.jpg/i });
+    fireEvent.click(card);
+    fireEvent.change(screen.getByRole("textbox", { name: /^Legenda/ }), { target: { value: "Post com foto" } });
+    fireEvent.change(screen.getByLabelText("Data"), { target: { value: "2027-09-25" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Agendar publicação" }).closest("form")!);
+    await waitFor(() => expect(postsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ mediaAssetIds: [composerMediaAsset.id] })));
+  });
+
+  it("descarta listagem e upload de mídia do Workspace anterior durante a troca", async () => {
+    const tenantB = { ...demoAuthSession.tenant, id: uuid(810), name: "Workspace B", slug: "workspace-b" };
+    const sessionB = { ...demoAuthSession, tenant: tenantB };
+    const authRepository: AuthRepository = {
+      getCurrentSession: vi.fn().mockResolvedValue(demoAuthSession),
+      listWorkspaces: vi.fn().mockResolvedValue([
+        { tenantId: demoAuthSession.tenant.id, name: demoAuthSession.tenant.name, slug: demoAuthSession.tenant.slug, role: demoAuthSession.tenant.role, selected: true },
+        { tenantId: tenantB.id, name: tenantB.name, slug: tenantB.slug, role: tenantB.role, selected: false },
+      ]),
+      login: vi.fn().mockResolvedValue(demoAuthSession),
+      register: vi.fn().mockResolvedValue(demoAuthSession),
+      logout: vi.fn().mockResolvedValue(undefined),
+      selectWorkspace: vi.fn().mockResolvedValue(sessionB),
+    };
+    const listA = deferred<MediaAsset[]>();
+    const uploadA = deferred<MediaAsset>();
+    const source = mediaRepository({
+      list: vi.fn().mockReturnValueOnce(listA.promise).mockResolvedValueOnce([]),
+      upload: vi.fn().mockReturnValue(uploadA.promise),
+    });
+    const createObjectURL = vi.fn().mockReturnValue("blob:workspace-a");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", Object.assign(class extends URL {}, { createObjectURL, revokeObjectURL }));
+    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue({ ...createdPost, tenantId: tenantB.id, mediaAssetIds: [] }) };
+    render(<App authRepository={authRepository} initialAuthSession={demoAuthSession} repository={postsRepository} mediaAssetsRepository={source} />);
+    await screen.findByText("Nenhuma publicação agendada");
+    fireEvent.click(screen.getByRole("button", { name: /Criar publicação/i }));
+    await waitFor(() => expect(source.list).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByLabelText("Enviar foto ou vídeo"), { target: { files: [new File(["a"], "antiga.jpg", { type: "image/jpeg" })] } });
+    const selector = await screen.findByLabelText("Workspace ativo");
+    fireEvent.change(selector, { target: { value: tenantB.id } });
+    await waitFor(() => expect(screen.getByLabelText("Workspace ativo")).toHaveValue(tenantB.id));
+    fireEvent.click(screen.getByRole("button", { name: /Criar publicação/i }));
+    await waitFor(() => expect(source.list).toHaveBeenCalledTimes(2));
+    await act(async () => { listA.resolve([composerMediaAsset]); uploadA.resolve(composerMediaAsset); await Promise.all([listA.promise, uploadA.promise]); });
+    expect(screen.queryByText("foto-do-workspace.jpg")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agendar publicação" })).toBeEnabled();
+    fireEvent.change(screen.getByRole("textbox", { name: /^Legenda/ }), { target: { value: "Post no B" } });
+    fireEvent.change(screen.getByLabelText("Data"), { target: { value: "2027-09-25" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Agendar publicação" }).closest("form")!);
+    await waitFor(() => expect(postsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ mediaAssetIds: [] })));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:workspace-a");
+  });
+
+  it("permite criar Post sem mídia após falha da biblioteca", async () => {
+    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createdPost) };
+    const source = mediaRepository({ list: vi.fn().mockRejectedValue(new Error("offline")) });
+    render(<App repository={postsRepository} mediaAssetsRepository={source} />);
+    await screen.findByText("Nenhuma publicação agendada");
+    fireEvent.click(screen.getByRole("button", { name: /Criar publicação/i }));
+    expect(await screen.findByText("Não foi possível carregar sua biblioteca de mídia.")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: /^Legenda/ }), { target: { value: "Post sem mídia" } });
+    fireEvent.change(screen.getByLabelText("Data"), { target: { value: "2027-09-25" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Agendar publicação" }).closest("form")!);
+    await waitFor(() => expect(postsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ mediaAssetIds: [] })));
   });
 });

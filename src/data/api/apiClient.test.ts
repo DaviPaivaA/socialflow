@@ -2,6 +2,21 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiClient, HttpError, JsonParseError } from "./apiClient";
 
 describe("ApiClient", () => {
+  it("resolve a URL sem barras duplicadas e envia FormData sem Content-Type manual", async () => {
+    const form = new FormData();
+    form.append("file", new Blob(["imagem"], { type: "image/jpeg" }), "foto.jpg");
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ id: "ok" }));
+    const client = new ApiClient({ baseUrl: "https://api.socialflow.example/", fetchImpl: fetchMock });
+
+    expect(client.resolveUrl("/media-assets/id/content")).toBe("https://api.socialflow.example/media-assets/id/content");
+    await expect(client.postForm("/media-assets", form)).resolves.toEqual({ id: "ok" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.socialflow.example/media-assets");
+    expect(init).toEqual(expect.objectContaining({ body: form, credentials: "include", method: "POST" }));
+    expect(new Headers(init?.headers).has("Content-Type")).toBe(false);
+  });
+
   it("invoca o fetch global com globalThis como receiver", async () => {
     const fetchGlobal = vi.fn(function (
       this: typeof globalThis,

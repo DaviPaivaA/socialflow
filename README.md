@@ -155,6 +155,9 @@ cookie `SameSite=Lax` permaneça first-party. A API oferece:
   `file` (resposta `201` com metadados seguros);
 - `GET /media-assets` e `GET /media-assets/:id`, leitura dos metadados somente
   do Workspace autenticado.
+- `GET /media-assets/:id/content` e `HEAD /media-assets/:id/content`, leitura
+  privada e autenticada do arquivo para preview; `GET` aceita um byte range para
+  reprodução de vídeo (`206` ou `416`).
 
 ### Mídia local — Etapa 6A
 
@@ -169,8 +172,8 @@ arquivo temporário, calcula SHA-256, move o arquivo para
 `<MEDIA_STORAGE_PATH>/<tenant UUID>/<media UUID>.<extensão>` e só então grava os
 metadados em `media_assets`. Se o INSERT falhar, a API tenta remover o arquivo
 movido. O nome original é apenas metadado sanitizado; não define o caminho.
-`GET` nunca expõe `storage_key`, SHA-256 ou caminhos internos. Não há URL de
-conteúdo/pública nem publicação na Meta.
+`GET` de metadados nunca expõe `storage_key`, SHA-256 ou caminhos internos.
+Os arquivos não são publicados na Meta.
 
 ### Relação Post–mídia — Etapa 6B
 
@@ -191,9 +194,21 @@ mesmo Workspace, independentemente de quem fez o upload. Remover fisicamente
 um Post elimina suas relações; remover fisicamente uma mídia referenciada é
 bloqueado. Não há endpoint de exclusão de mídia nesta etapa.
 
-O Composer ainda não oferece seleção de mídia e continua criando Posts sem
-mídia. O arquivo não tem endpoint binário ou URL pública; publicar na Meta
-continua fora do escopo da 6B.
+### Biblioteca e preview no Composer — Etapa 6C
+
+O Composer carrega a biblioteca do Workspace atual, permite reutilizar uma
+mídia ou enviar uma foto/vídeo imediatamente, mostra preview local durante o
+upload e envia `mediaAssetIds` com zero ou um ID no agendamento. É possível
+continuar criando Posts sem mídia. A troca de Workspace limpa a seleção e
+descarta respostas tardias da listagem ou do upload anterior. No modo mock, a
+biblioteca permanece local; no modo HTTP, utiliza a API autenticada.
+
+`GET/HEAD /media-assets/:id/content` exige sessão válida e o mesmo Workspace
+da mídia. O conteúdo é transmitido em stream, com `Cache-Control: private,
+no-store` e `X-Content-Type-Options: nosniff`; `GET` suporta um único byte
+range para seek de vídeo. A URL serve somente ao usuário autenticado e **não é
+uma URL pública para a Meta**. A 6C não possui migration nova, não oferece
+exclusão de mídia e não implementa publicação real.
 
 No futuro deploy Docker, use por exemplo `MEDIA_STORAGE_PATH=/app/data/media`
 na API e um bind mount persistente como `./data/media:/app/data/media` para

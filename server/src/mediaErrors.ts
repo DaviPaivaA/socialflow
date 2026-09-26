@@ -16,3 +16,10 @@ export class MediaStorageError extends MediaRequestError {
     this.name = "MediaStorageError";
   }
 }
+
+export class MediaContentUnavailableError extends MediaRequestError {
+  constructor() {
+    super(500, "media_content_unavailable", "Não foi possível acessar o conteúdo da mídia.");
+    this.name = "MediaContentUnavailableError";
+  }
+}

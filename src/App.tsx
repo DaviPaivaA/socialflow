@@ -23,6 +23,7 @@ import { Toast } from "./components/Toast";
 import type { ToastVariant } from "./components/Toast";
 import { titles } from "./data/mockData";
 import { createConfiguredAppServices } from "./data/createAppServices";
+import type { MediaAssetsRepository } from "./data/media/MediaAssetsRepository";
 import type { AuthRepository } from "./data/auth/AuthRepository";
 import type {
   CreatePostInput,
@@ -51,11 +52,13 @@ import type { NavKey, Post } from "./types/social";
 type AppProps = {
   authRepository?: AuthRepository;
   initialAuthSession?: AuthSession | null;
+  mediaAssetsRepository?: MediaAssetsRepository;
   repository?: PostsRepository;
   socialAccountsRepository?: SocialAccountsRepository;
 };
 
 type RoutedAppProps = {
+  mediaAssetsRepository: MediaAssetsRepository;
   repository: PostsRepository;
   socialAccountsRepository: SocialAccountsRepository;
   workspaceId: string;
@@ -135,6 +138,7 @@ function reconcilePosts(
 }
 
 function RoutedApp({
+  mediaAssetsRepository,
   repository,
   socialAccountsRepository,
   workspaceId,
@@ -370,9 +374,11 @@ function RoutedApp({
             <Composer
               isLoadingPosts={isLoadingPosts}
               isSubmitting={isSubmitting}
+              mediaAssetsRepository={mediaAssetsRepository}
               onClose={closeComposer}
               onDraftChange={reviseComposerDraft}
               onSchedule={schedulePost}
+              workspaceId={workspaceId}
             />
           )}
           {toast && (
@@ -480,14 +486,16 @@ function PublicOnly({ children }: { children: ReactNode }) {
 }
 
 function AuthenticatedApplication({
+  mediaAssetsRepository,
   repository,
   socialAccountsRepository,
-}: Pick<RoutedAppProps, "repository" | "socialAccountsRepository">) {
+}: Pick<RoutedAppProps, "mediaAssetsRepository" | "repository" | "socialAccountsRepository">) {
   const { session } = useAuth();
   if (!session) return null;
   return (
     <RoutedApp
       key={session.tenant.id}
+      mediaAssetsRepository={mediaAssetsRepository}
       repository={repository}
       socialAccountsRepository={socialAccountsRepository}
       workspaceId={session.tenant.id}
@@ -496,9 +504,10 @@ function AuthenticatedApplication({
 }
 
 function AppRoutes({
+  mediaAssetsRepository,
   repository,
   socialAccountsRepository,
-}: Pick<RoutedAppProps, "repository" | "socialAccountsRepository">) {
+}: Pick<RoutedAppProps, "mediaAssetsRepository" | "repository" | "socialAccountsRepository">) {
   return (
     <Routes>
       <Route
@@ -514,6 +523,7 @@ function AppRoutes({
         element={
           <RequireAuth>
             <AuthenticatedApplication
+              mediaAssetsRepository={mediaAssetsRepository}
               repository={repository}
               socialAccountsRepository={socialAccountsRepository}
             />
@@ -527,6 +537,7 @@ function AppRoutes({
 export default function App({
   authRepository,
   initialAuthSession,
+  mediaAssetsRepository,
   repository,
   socialAccountsRepository,
 }: AppProps) {
@@ -534,6 +545,7 @@ export default function App({
   const resolvedAuthRepository =
     authRepository ?? configuredServices.authRepository;
   const resolvedRepository = repository ?? configuredServices.postsRepository;
+  const resolvedMediaAssetsRepository = mediaAssetsRepository ?? configuredServices.mediaAssetsRepository;
   const resolvedSocialAccountsRepository =
     socialAccountsRepository ?? configuredServices.socialAccountsRepository;
   const resolvedInitialSession =
@@ -550,6 +562,7 @@ export default function App({
         repository={resolvedAuthRepository}
       >
         <AppRoutes
+          mediaAssetsRepository={resolvedMediaAssetsRepository}
           repository={resolvedRepository}
           socialAccountsRepository={resolvedSocialAccountsRepository}
         />

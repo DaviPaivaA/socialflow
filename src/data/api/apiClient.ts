@@ -83,11 +83,15 @@ export class ApiClient {
     this.fetchImpl = fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   }
 
+  resolveUrl(path: string): string {
+    return buildUrl(this.baseUrl, path);
+  }
+
   private async requestResponse<T>(
     path: string,
     init: RequestInit = {},
   ): Promise<ApiResponse<T>> {
-    const url = buildUrl(this.baseUrl, path);
+    const url = this.resolveUrl(path);
     const headers = new Headers(init.headers);
 
     if (!headers.has("Accept")) headers.set("Accept", "application/json");
@@ -125,6 +129,10 @@ export class ApiClient {
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+  }
+
+  postForm<TResponse>(path: string, body: FormData): Promise<TResponse> {
+    return this.request<TResponse>(path, { body, method: "POST" });
   }
 
   patch<TResponse, TBody>(path: string, body: TBody): Promise<TResponse> {

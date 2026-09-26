@@ -53,7 +53,8 @@ import { PostgresMetaOAuthStateRepository } from "./metaOAuthStateRepository.ts"
 import { resolveClientAddress } from "./clientAddress.ts";
 import { MediaAssetsService } from "./mediaAssetsService.ts";
 import { PostgresMediaAssetsRepository } from "./mediaAssetsRepository.ts";
-import { MediaRequestError } from "./mediaErrors.ts";
+import { MediaContentUnavailableError, MediaRequestError } from "./mediaErrors.ts";
+import { sendMediaContent } from "./mediaContent.ts";
 import type { MediaLimits } from "./mediaStorage.ts";
 
 const MAX_BODY_SIZE = 1_048_576;
@@ -117,7 +118,7 @@ function writeCorsHeaders(
     response.setHeader("Access-Control-Allow-Headers", "Content-Type");
     response.setHeader(
       "Access-Control-Allow-Methods",
-      "GET, POST, PATCH, DELETE, OPTIONS",
+      "GET, HEAD, POST, PATCH, DELETE, OPTIONS",
     );
   }
 }
@@ -557,6 +558,29 @@ export function createApiServer({
         return;
       }
 
+      const mediaContentMatch = /^\/media-assets\/([^/]+)\/content$/.exec(url.pathname);
+      if (mediaContentMatch) {
+        const context = await postsContextResolver.resolve(request);
+        const id = mediaContentMatch[1];
+        if (!isUuid(id)) {
+          throw new RequestError(400, "invalid_media_asset_id", "O identificador da mídia é inválido.", ["id"]);
+        }
+        if (method === "GET" || method === "HEAD") {
+          response.setHeader("Cache-Control", "private, no-store");
+          const content = await mediaAssetsService.getContent(context, id);
+          try {
+            await sendMediaContent(request, response, content);
+          } catch {
+            if (response.headersSent) {
+              response.destroy();
+              return;
+            }
+            throw new MediaContentUnavailableError();
+          }
+          return;
+        }
+      }
+
       const mediaAssetMatch = /^\/media-assets\/([^/]+)$/.exec(url.pathname);
       if (mediaAssetMatch) {
         const context = await postsContextResolver.resolve(request);
@@ -630,6 +654,7 @@ export function createApiServer({
         url.pathname === "/posts" ||
         url.pathname === "/social-accounts" ||
         url.pathname === "/media-assets" ||
+        mediaContentMatch ||
         mediaAssetMatch ||
         socialAccountMatch ||
         url.pathname.startsWith("/auth/")
@@ -642,6 +667,8 @@ export function createApiServer({
               ? "GET, POST, OPTIONS"
             : mediaAssetMatch
               ? "GET, OPTIONS"
+            : mediaContentMatch
+              ? "GET, HEAD, OPTIONS"
             : url.pathname.startsWith("/social-accounts/")
               ? "GET, PATCH, DELETE, OPTIONS"
             : url.pathname === "/social-accounts"
