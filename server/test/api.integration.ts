@@ -8,14 +8,16 @@ import { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../../src/data/api/apiClient.ts";
 import { HttpPostsRepository } from "../../src/data/posts/HttpPostsRepository.ts";
-import type { CreatePostInput } from "../../src/data/posts/PostsRepository.ts";
+import type { CreatePostInput } from "../src/postContract.ts";
 import {
   isAuthSession,
   type AuthSession,
 } from "../../shared/authContract.ts";
 import { createApiServer } from "../src/app.ts";
+import { MetaPublishingClientError, type MetaPublishingProviderClient } from "../src/metaPublishingClient.ts";
 import { runMigrations } from "../src/migrations.ts";
 import { SocialTokenCipher } from "../src/socialTokenCrypto.ts";
+import { publicationFixture } from "./publicationFixtures.ts";
 
 type RunningApi = {
   baseUrl: string;
@@ -23,12 +25,17 @@ type RunningApi = {
   server: Server;
 };
 
-const INPUT: CreatePostInput = {
+const INPUT: Omit<CreatePostInput, "socialAccountIds"> = {
   caption: "Conteúdo que deve sobreviver ao reinício.",
+  publicationMode: "scheduled",
   scheduledFor: "2027-08-13T10:30:00-03:00",
-  status: "scheduled",
+  mediaAssetIds: [],
   title: "Publicação persistente",
 };
+
+function postInput(socialAccountId: string): CreatePostInput {
+  return { ...INPUT, socialAccountIds: [socialAccountId] };
+}
 
 function requireTestDatabaseUrl(): string {
   const value = process.env.TEST_DATABASE_URL?.trim();
@@ -74,12 +81,14 @@ function schemaPool(databaseUrl: string, schema: string) {
 async function startApi(
   databaseUrl: string,
   schema: string,
+  metaPublishingClient?: MetaPublishingProviderClient,
 ): Promise<RunningApi> {
   const pool = schemaPool(databaseUrl, schema);
   const server = createApiServer({
     authRateLimit: { maxAttempts: 1_000, windowMs: 60_000 },
     corsOrigin: "http://localhost:5173",
     logger: { error: vi.fn() },
+    metaPublishingClient,
     pool,
     sessionCookie: {
       maxAgeSeconds: 60 * 60,
@@ -177,6 +186,24 @@ async function insertMediaAsset(
       'image', 'image/jpeg', 8, $5)
   `, [id, input.tenantId, input.uploadedByUserId, `${input.tenantId}/${id}.jpg`, "a".repeat(64)]);
   return id;
+}
+
+async function insertPublishablePage(pool: Pool, tenantId: string): Promise<string> {
+  const connectionId = (await pool.query<{ id: string }>(
+    `INSERT INTO oauth_connections (tenant_id, platform, external_user_id, access_token_encrypted, scopes)
+     VALUES ($1, 'meta', $2, $3, ARRAY['pages_show_list', 'pages_read_engagement', 'pages_manage_posts']) RETURNING id`,
+    [tenantId, `user-${randomUUID()}`, Buffer.from("encrypted-user-token")],
+  )).rows[0]!.id;
+  const accountId = (await pool.query<{ id: string }>(
+    `INSERT INTO social_accounts (tenant_id, oauth_connection_id, account_type, external_account_id, metadata)
+     VALUES ($1, $2, 'facebook_page', $3, '{"tasks":["CREATE_CONTENT"]}'::jsonb) RETURNING id`,
+    [tenantId, connectionId, `page-${randomUUID()}`],
+  )).rows[0]!.id;
+  await pool.query(
+    `INSERT INTO social_account_credentials (tenant_id, social_account_id, access_token_encrypted) VALUES ($1, $2, $3)`,
+    [tenantId, accountId, Buffer.from("encrypted-page-token")],
+  );
+  return accountId;
 }
 
 async function expectOfficialSchema(pool: Pool) {
@@ -582,7 +609,7 @@ describe("API com PostgreSQL e schema oficial", () => {
       const migrationResult = await migrationPool.query<{ count: string }>(`
         SELECT count(*)::text AS count FROM schema_migrations
       `);
-      expect(migrationResult.rows[0]?.count).toBe("9");
+      expect(migrationResult.rows[0]?.count).toBe("10");
 
       const apiA = await startApi(databaseUrl, schema);
       runningApis.push(apiA);
@@ -596,6 +623,8 @@ describe("API com PostgreSQL e schema oficial", () => {
         "Autor B",
         `author-b-${randomUUID()}@example.test`,
       );
+      const pageA = await insertPublishablePage(migrationPool, accountA.session.tenant.id);
+      const pageB = await insertPublishablePage(migrationPool, accountB.session.tenant.id);
       const repositoryA = new HttpPostsRepository(
         new ApiClient({
           baseUrl: apiA.baseUrl,
@@ -615,7 +644,7 @@ describe("API com PostgreSQL e schema oficial", () => {
 
       const invalidResponse = await apiFetch(`${apiA.baseUrl}/posts`, {
         body: JSON.stringify({
-          ...INPUT,
+          ...postInput(pageA),
           scheduledFor: "2027-02-30T10:30:00-03:00",
         }),
         headers: {
@@ -640,7 +669,7 @@ describe("API com PostgreSQL e schema oficial", () => {
         const invalidTimestampResponse = await apiFetch(
           `${apiA.baseUrl}/posts`,
           {
-            body: JSON.stringify({ ...INPUT, scheduledFor }),
+            body: JSON.stringify({ ...postInput(pageA), scheduledFor }),
             headers: {
               "Content-Type": "application/json",
               Cookie: accountA.cookie,
@@ -658,7 +687,13 @@ describe("API com PostgreSQL e schema oficial", () => {
         });
       }
 
-      const postA = await repositoryA.create(INPUT);
+      const createdA = await apiFetch(`${apiA.baseUrl}/posts`, {
+        body: JSON.stringify(postInput(pageA)),
+        headers: { "Content-Type": "application/json", Cookie: accountA.cookie },
+        method: "POST",
+      });
+      expect(createdA.status).toBe(201);
+      const postA = (await createdA.json() as { post: { id: string; mediaAssetIds: string[] }; publications: unknown[] }).post;
       expect(postA).toEqual(
         expect.objectContaining({
           authorUserId: accountA.session.user.id,
@@ -668,11 +703,17 @@ describe("API com PostgreSQL e schema oficial", () => {
         }),
       );
 
-      const postB = await repositoryB.create({
-        ...INPUT,
+      const createdB = await apiFetch(`${apiA.baseUrl}/posts`, {
+        body: JSON.stringify({
+        ...postInput(pageB),
         caption: "Conteúdo exclusivo do Tenant B.",
         title: "Post B",
+        }),
+        headers: { "Content-Type": "application/json", Cookie: accountB.cookie },
+        method: "POST",
       });
+      expect(createdB.status).toBe(201);
+      const postB = (await createdB.json() as { post: { id: string; mediaAssetIds: string[] } }).post;
 
       await expect(repositoryA.list()).resolves.toEqual([postA]);
       await expect(repositoryB.list()).resolves.toEqual([postB]);
@@ -691,7 +732,7 @@ describe("API com PostgreSQL e schema oficial", () => {
 
       const manipulatedResponse = await apiFetch(`${apiA.baseUrl}/posts`, {
         body: JSON.stringify({
-          ...INPUT,
+          ...postInput(pageA),
           authorUserId: accountB.session.user.id,
           tenantId: accountB.session.tenant.id,
           title: "Tentativa de trocar tenant",
@@ -705,8 +746,10 @@ describe("API com PostgreSQL e schema oficial", () => {
       expect(manipulatedResponse.status).toBe(201);
       await expect(manipulatedResponse.json()).resolves.toEqual(
         expect.objectContaining({
-          authorUserId: accountA.session.user.id,
-          tenantId: accountA.session.tenant.id,
+          post: expect.objectContaining({
+            authorUserId: accountA.session.user.id,
+            tenantId: accountA.session.tenant.id,
+          }),
         }),
       );
 
@@ -766,6 +809,7 @@ describe("API com PostgreSQL e schema oficial", () => {
       const accountA = await registerUser(api.baseUrl, "Autora A", `media-a-${randomUUID()}@example.test`);
       const accountB = await registerUser(api.baseUrl, "Autora B", `media-b-${randomUUID()}@example.test`);
       const tenantA = accountA.session.tenant.id;
+      const pageA = await insertPublishablePage(pool, tenantA);
       const mediaA = await insertMediaAsset(pool, { tenantId: tenantA, uploadedByUserId: accountA.session.user.id });
       const mediaB = await insertMediaAsset(pool, { tenantId: accountB.session.tenant.id, uploadedByUserId: accountB.session.user.id });
       const sameTenantUploader = randomUUID();
@@ -778,7 +822,7 @@ describe("API com PostgreSQL e schema oficial", () => {
       const create = (mediaAssetIds?: unknown) => apiFetch(`${api!.baseUrl}/posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Cookie: accountA.cookie },
-        body: JSON.stringify(mediaAssetIds === undefined ? INPUT : { ...INPUT, mediaAssetIds }),
+        body: JSON.stringify(mediaAssetIds === undefined ? postInput(pageA) : { ...postInput(pageA), mediaAssetIds }),
       });
 
       for (const invalid of [null, "bad", ["bad"], [mediaA, mediaB], [mediaA, mediaA]]) {
@@ -789,21 +833,21 @@ describe("API com PostgreSQL e schema oficial", () => {
 
       const without = await create();
       expect(without.status).toBe(201);
-      const withoutPost = await without.json() as { id: string; mediaAssetIds: string[] };
+      const withoutPost = (await without.json() as { post: { id: string; mediaAssetIds: string[] } }).post;
       expect(withoutPost.mediaAssetIds).toEqual([]);
       const explicitEmpty = await create([]);
       expect(explicitEmpty.status).toBe(201);
-      expect((await explicitEmpty.json() as { mediaAssetIds: string[] }).mediaAssetIds).toEqual([]);
+      expect((await explicitEmpty.json() as { post: { mediaAssetIds: string[] } }).post.mediaAssetIds).toEqual([]);
 
       const withMedia = await create([mediaA]);
       expect(withMedia.status).toBe(201);
-      const withMediaPost = await withMedia.json() as { id: string; mediaAssetIds: string[] };
+      const withMediaPost = (await withMedia.json() as { post: { id: string; mediaAssetIds: string[] } }).post;
       expect(withMediaPost.mediaAssetIds).toEqual([mediaA]);
       const relation = await pool.query<{ position: number }>(`SELECT position FROM post_media WHERE tenant_id = $1::uuid AND post_id = $2::uuid AND media_asset_id = $3::uuid`, [tenantA, withMediaPost.id, mediaA]);
       expect(relation.rows).toEqual([{ position: 0 }]);
       const colleagueResponse = await create([colleagueMedia]);
       expect(colleagueResponse.status).toBe(201);
-      expect((await colleagueResponse.json() as { mediaAssetIds: string[] }).mediaAssetIds).toEqual([colleagueMedia]);
+      expect((await colleagueResponse.json() as { post: { mediaAssetIds: string[] } }).post.mediaAssetIds).toEqual([colleagueMedia]);
 
       const beforeUnavailable = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM posts WHERE tenant_id = $1::uuid`, [tenantA]);
       const unavailableBodies: unknown[] = [];
@@ -819,8 +863,8 @@ describe("API com PostgreSQL e schema oficial", () => {
       const [reusedA, reusedB] = await Promise.all([create([mediaA]), create([mediaA])]);
       expect(reusedA.status).toBe(201);
       expect(reusedB.status).toBe(201);
-      const reusedPostA = await reusedA.json() as { id: string };
-      const reusedPostB = await reusedB.json() as { id: string };
+      const reusedPostA = (await reusedA.json() as { post: { id: string } }).post;
+      const reusedPostB = (await reusedB.json() as { post: { id: string } }).post;
       expect(reusedPostA.id).not.toBe(reusedPostB.id);
       const reusedRelations = await pool.query<{ post_id: string }>(`SELECT post_id FROM post_media WHERE tenant_id = $1::uuid AND media_asset_id = $2::uuid`, [tenantA, mediaA]);
       expect(reusedRelations.rows).toHaveLength(3);
@@ -862,6 +906,7 @@ describe("API com PostgreSQL e schema oficial", () => {
       await runMigrations(pool);
       api = await startApi(databaseUrl, schema);
       const account = await registerUser(api.baseUrl, "Autora", `rollback-${randomUUID()}@example.test`);
+      const page = await insertPublishablePage(pool, account.session.tenant.id);
       const mediaId = await insertMediaAsset(pool, { tenantId: account.session.tenant.id, uploadedByUserId: account.session.user.id });
       const before = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM posts WHERE tenant_id = $1::uuid`, [account.session.tenant.id]);
       await pool.query(`CREATE FUNCTION reject_post_media_for_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced post_media failure'; END; $$`);
@@ -870,15 +915,62 @@ describe("API com PostgreSQL e schema oficial", () => {
         const response = await apiFetch(`${api.baseUrl}/posts`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Cookie: account.cookie },
-          body: JSON.stringify({ ...INPUT, mediaAssetIds: [mediaId] }),
+          body: JSON.stringify({ ...postInput(page), publicationMode: "now", scheduledFor: undefined, mediaAssetIds: [mediaId] }),
         });
         expect(response.status).toBe(500);
+        expect(await response.json()).toEqual({ error: { code: "internal_error", message: "Não foi possível concluir a operação." } });
         const after = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM posts WHERE tenant_id = $1::uuid`, [account.session.tenant.id]);
         expect(after.rows).toEqual(before.rows);
+        const destinations = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM post_publications WHERE tenant_id = $1::uuid`, [account.session.tenant.id]);
+        expect(destinations.rows[0]?.count).toBe("0");
       } finally {
         await pool.query(`DROP TRIGGER IF EXISTS reject_post_media_for_test ON post_media`);
         await pool.query(`DROP FUNCTION IF EXISTS reject_post_media_for_test()`);
       }
+    } finally {
+      if (api) await stopApi(api);
+      await pool.end();
+      await dropSchema(adminPool, schema);
+    }
+  });
+
+  it("responde 400 sem distinguir destino desconhecido de outro tenant e rejeita vídeo publicável", async () => {
+    const databaseUrl = requireTestDatabaseUrl();
+    const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
+    const adminPool = await createSchema(databaseUrl, schema);
+    const pool = schemaPool(databaseUrl, schema);
+    let api: RunningApi | undefined;
+    try {
+      await runMigrations(pool);
+      api = await startApi(databaseUrl, schema);
+      const accountA = await registerUser(api.baseUrl, "Autora A", `destination-a-${randomUUID()}@example.test`);
+      const accountB = await registerUser(api.baseUrl, "Autora B", `destination-b-${randomUUID()}@example.test`);
+      const foreignPage = await insertPublishablePage(pool, accountB.session.tenant.id);
+      const create = (socialAccountId: string, mediaAssetIds: string[] = []) => apiFetch(`${api!.baseUrl}/posts`, {
+        body: JSON.stringify({ ...postInput(socialAccountId), mediaAssetIds }),
+        headers: { "Content-Type": "application/json", Cookie: accountA.cookie },
+        method: "POST",
+      });
+      const responses = [];
+      for (const destination of [foreignPage, randomUUID()]) {
+        const response = await create(destination);
+        expect(response.status).toBe(400);
+        responses.push(await response.json());
+      }
+      expect(responses[0]).toEqual(responses[1]);
+      expect(responses[0]).toEqual({ error: { code: "invalid_post_destination", message: "Um ou mais destinos não estão disponíveis para publicação." } });
+
+      const ownPage = await insertPublishablePage(pool, accountA.session.tenant.id);
+      const videoId = randomUUID();
+      await pool.query(
+        `INSERT INTO media_assets (id, tenant_id, uploaded_by_user_id, storage_key,
+          original_filename, media_type, mime_type, size_bytes, sha256)
+         VALUES ($1, $2, $3, $4, 'fixture.mp4', 'video', 'video/mp4', 8, $5)`,
+        [videoId, accountA.session.tenant.id, accountA.session.user.id, `${accountA.session.tenant.id}/${videoId}.mp4`, "a".repeat(64)],
+      );
+      const videoResponse = await create(ownPage, [videoId]);
+      expect(videoResponse.status).toBe(400);
+      expect(await videoResponse.json()).toEqual({ error: { code: "unsupported_post_media", message: "A mídia não é compatível com a publicação de Facebook nesta etapa." } });
     } finally {
       if (api) await stopApi(api);
       await pool.end();
@@ -915,6 +1007,7 @@ describe("API com PostgreSQL e schema oficial", () => {
         "007_add_oauth_authorization_requests.sql",
         "008_add_media_assets.sql",
         "009_add_post_media.sql",
+        "010_add_post_publications.sql",
       ]);
     } finally {
       await pool.end();
@@ -1026,6 +1119,166 @@ describe("API com PostgreSQL e schema oficial", () => {
     } finally {
       await pool.end();
       await dropSchema(adminPool, schema);
+    }
+  });
+});
+
+describe("POST /posts e publicação por Page", () => {
+  if (!process.env.TEST_DATABASE_URL) {
+    it.skip("exige TEST_DATABASE_URL", () => undefined);
+    return;
+  }
+
+  async function withPublishingApi(
+    publishText: MetaPublishingProviderClient["publishText"],
+    run: (api: RunningApi, account: Awaited<ReturnType<typeof registerUser>>, page: () => Promise<string>) => Promise<void>,
+  ) {
+    const databaseUrl = requireTestDatabaseUrl();
+    const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
+    const admin = await createSchema(databaseUrl, schema);
+    const migrationPool = schemaPool(databaseUrl, schema);
+    let api: RunningApi | undefined;
+    try {
+      await runMigrations(migrationPool);
+      api = await startApi(databaseUrl, schema, { publishText, publishPhoto: vi.fn() });
+      const account = await registerUser(api.baseUrl, "Publisher", `publisher-${randomUUID()}@example.test`);
+      const page = async () => {
+        const id = await insertPublishablePage(migrationPool, account.session.tenant.id);
+        await migrationPool.query(
+          "UPDATE social_account_credentials SET access_token_encrypted = $1 WHERE tenant_id = $2 AND social_account_id = $3",
+          [Buffer.from(new SocialTokenCipher(Buffer.alloc(32, 7)).encryptSecret("secret-page-token")), account.session.tenant.id, id],
+        );
+        return id;
+      };
+      await run(api, account, page);
+    } finally {
+      if (api) await stopApi(api);
+      await migrationPool.end();
+      await dropSchema(admin, schema);
+    }
+  }
+
+  async function create(api: RunningApi, cookie: string, body: unknown) {
+    return apiFetch(`${api.baseUrl}/posts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("returns scheduled destination rows without calling Meta", async () => {
+    const publishText = vi.fn(async () => ({ providerPostId: "unused" }));
+    await withPublishingApi(publishText, async (api, account, page) => {
+      const pageId = await page();
+      const response = await create(api, account.cookie, postInput(pageId));
+      expect(response.status).toBe(201);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const result = await response.json() as { post: { id: string; status: string; scheduledFor: string }; publications: Array<{ postId: string; socialAccountId: string; status: string }> };
+      expect(result.post).toMatchObject({ status: "scheduled", scheduledFor: "2027-08-13T13:30:00.000Z" });
+      expect(result.publications).toEqual([expect.objectContaining({ postId: result.post.id, socialAccountId: pageId, status: "scheduled" })]);
+      expect(publishText).not.toHaveBeenCalled();
+      const persisted = await api.pool.query("SELECT status FROM post_publications WHERE tenant_id = $1 AND post_id = $2", [account.session.tenant.id, result.post.id]);
+      expect(persisted.rows.map(row => row.status)).toEqual(["scheduled"]);
+    });
+  });
+
+  it("rejects client-owned state fields on immediate requests", async () => {
+    const publishText = vi.fn(async () => ({ providerPostId: "unused" }));
+    await withPublishingApi(publishText, async (api, account, page) => {
+      const pageId = await page();
+      for (const [field, value] of [["status", "published"], ["scheduledFor", "2027-08-13T13:00:00.000Z"]] as const) {
+        const response = await create(api, account.cookie, {
+          caption: "Immediate text", publicationMode: "now", socialAccountIds: [pageId], [field]: value,
+        });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: { code: "invalid_post", fields: [field], message: "Os dados da publicação são inválidos." } });
+      }
+      const posts = await api.pool.query("SELECT count(*)::int AS count FROM posts WHERE tenant_id = $1", [account.session.tenant.id]);
+      expect(posts.rows[0].count).toBe(0);
+      expect(publishText).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each([
+    ["all success", 2, [] as number[], "published", ["published", "published"]],
+    ["mixed provider outcome", 2, [1], "partially_failed", ["published", "failed"]],
+    ["all provider failures", 2, [0, 1], "failed", ["failed", "failed"]],
+  ])("returns persisted 201 for immediate %s", async (_case, count, failureIndexes, expectedPostStatus, expectedStatuses) => {
+    let callIndex = 0;
+    const publishText = vi.fn(async () => {
+      const index = callIndex++;
+      if (failureIndexes.includes(index)) throw new MetaPublishingClientError("meta_provider_error", "publish_text");
+      return { providerPostId: `provider-${index}` };
+    });
+    await withPublishingApi(publishText, async (api, account, page) => {
+      const pageIds = await Promise.all(Array.from({ length: count }, () => page()));
+      const response = await create(api, account.cookie, {
+        caption: "Immediate text", publicationMode: "now", socialAccountIds: pageIds, mediaAssetIds: [],
+        tenantId: randomUUID(), authorUserId: randomUUID(), membershipId: randomUUID(),
+      });
+      expect(response.status).toBe(201);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const result = await response.json() as { post: { id: string; tenantId: string; authorUserId: string; status: string }; publications: Array<{ status: string; tenantId: string; errorCode: string | null; errorMessage: string | null }> };
+      expect(result.post).toMatchObject({ tenantId: account.session.tenant.id, authorUserId: account.session.user.id, status: expectedPostStatus });
+      expect(result.publications.map(row => row.status)).toEqual(expectedStatuses);
+      expect(result.publications.every(row => row.tenantId === account.session.tenant.id)).toBe(true);
+      expect(publishText).toHaveBeenCalledTimes(count);
+      expect(JSON.stringify(result)).not.toContain("secret-page-token");
+      const persisted = await api.pool.query("SELECT status FROM post_publications WHERE tenant_id = $1 AND post_id = $2 ORDER BY created_at, id", [account.session.tenant.id, result.post.id]);
+      expect(persisted.rows.map(row => row.status).sort()).toEqual([...expectedStatuses].sort());
+    });
+  });
+});
+
+describe("ciclo de vida do scheduler da API", () => {
+  if (!process.env.TEST_DATABASE_URL) {
+    it.skip("exige TEST_DATABASE_URL", () => undefined);
+    return;
+  }
+
+  it("não inicia timers em APIs comuns e publica um post vencido ao iniciar o scheduler", async () => {
+    const fixture = await publicationFixture();
+    const due = await fixture.post(1, new Date(Date.now() - 60_000));
+    const publishText = vi.fn(async () => ({ providerPostId: "100_200" }));
+    let timerCallback: (() => void) | undefined;
+    const cancelTimer = vi.fn();
+    const server = createApiServer({
+      authRateLimit: { maxAttempts: 100, windowMs: 60_000 },
+      corsOrigin: "http://localhost:5173",
+      logger: { error: vi.fn() },
+      metaPublishingClient: { publishText, publishPhoto: vi.fn() },
+      publicationSchedulerOptions: {
+        setInterval: callback => { timerCallback = callback; return 456; },
+        clearInterval: cancelTimer,
+      },
+      pool: fixture.pool,
+      sessionCookie: { maxAgeSeconds: 3600, sameSite: "Lax", secure: false },
+      sessionTtlSeconds: 3600,
+      socialTokenCipher: new SocialTokenCipher(Buffer.alloc(32, 7)),
+    });
+    try {
+      await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+      expect((await fixture.pool.query("SELECT status FROM post_publications WHERE id = $1", [due.publications[0].id])).rows[0].status).toBe("scheduled");
+      expect(publishText).not.toHaveBeenCalled();
+
+      server.publicationScheduler.start();
+      await server.publicationScheduler.whenIdle();
+      expect((await fixture.pool.query("SELECT status FROM post_publications WHERE id = $1", [due.publications[0].id])).rows[0].status).toBe("published");
+      expect(publishText).toHaveBeenCalledTimes(1);
+
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      expect(server.publicationScheduler.isStarted()).toBe(false);
+      expect(cancelTimer).toHaveBeenCalledWith(456);
+      const afterShutdown = await fixture.post(1, new Date(Date.now() - 60_000));
+      timerCallback?.();
+      await server.publicationScheduler.whenIdle();
+      expect((await fixture.pool.query("SELECT status FROM post_publications WHERE id = $1", [afterShutdown.publications[0].id])).rows[0].status).toBe("scheduled");
+      expect(publishText).toHaveBeenCalledTimes(1);
+    } finally {
+      server.publicationScheduler.stop();
+      await server.publicationScheduler.whenIdle();
+      if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+      await fixture.close();
     }
   });
 });

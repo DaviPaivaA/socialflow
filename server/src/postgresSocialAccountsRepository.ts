@@ -8,6 +8,7 @@ import {
   type UpdateSocialAccountInput,
 } from "../../shared/socialAccountContract.ts";
 import type {
+  FacebookPublishingCredential,
   MetaAuthorizationContext,
   PersistMetaAuthorizationInput,
   PersistSocialAccountInput,
@@ -44,6 +45,14 @@ type ContextValidationRow = QueryResultRow & {
 type CreatedConnectionRow = QueryResultRow & { id: string };
 type AccountConnectionRow = QueryResultRow & { oauth_connection_id: string };
 type CreatedAccountRow = QueryResultRow & { id: string };
+
+type FacebookPublishingCredentialRow = QueryResultRow & {
+  access_token_encrypted: Buffer | null;
+  access_token_expires_at: Date | null;
+  external_account_id: string;
+  metadata: unknown;
+  scopes: string[];
+};
 
 const PUBLIC_SELECT = `
   account_row.id,
@@ -85,6 +94,26 @@ function normalizeTimestamp(value: unknown): string | null {
         ? new Date(value)
         : null;
   return date && Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function pageTasksFromMetadata(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return [];
+  }
+  const tasks = (value as Record<string, unknown>).tasks;
+  if (
+    !Array.isArray(tasks) ||
+    tasks.length > 50 ||
+    tasks.some(
+      (task) =>
+        typeof task !== "string" ||
+        task.trim().length === 0 ||
+        task.length > 100,
+    )
+  ) {
+    return [];
+  }
+  return [...new Set(tasks.map((task: string) => task.trim()))];
 }
 
 function providerFromAccountType(value: unknown): SocialAccountProvider | null {
@@ -317,6 +346,43 @@ export class PostgresSocialAccountsRepository
   ): Promise<SocialAccount | null> {
     await this.assertContext(context);
     return findByIdWith(this.pool, context, id);
+  }
+
+  async findFacebookPublishingCredential(
+    context: SocialAccountsContext,
+    id: string,
+  ): Promise<FacebookPublishingCredential | null> {
+    await this.assertContext(context);
+    const result = await this.pool.query<FacebookPublishingCredentialRow>(
+      `
+        SELECT
+          account_row.external_account_id,
+          account_row.metadata,
+          connection_row.scopes,
+          credential_row.access_token_encrypted,
+          credential_row.access_token_expires_at
+        FROM social_accounts account_row
+        JOIN oauth_connections connection_row
+          ON connection_row.tenant_id = account_row.tenant_id
+         AND connection_row.id = account_row.oauth_connection_id
+        JOIN social_account_credentials credential_row
+          ON credential_row.tenant_id = account_row.tenant_id
+         AND credential_row.social_account_id = account_row.id
+        WHERE account_row.tenant_id = $1::uuid
+          AND account_row.id = $2::uuid
+          AND account_row.account_type = 'facebook_page'::social_account_type
+      `,
+      [context.tenantId, id],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      accessTokenEncrypted: row.access_token_encrypted?.toString("utf8") ?? null,
+      providerAccountId: row.external_account_id,
+      scopes: row.scopes,
+      tasks: pageTasksFromMetadata(row.metadata),
+      tokenExpiresAt: normalizeTimestamp(row.access_token_expires_at),
+    };
   }
 
   async register(

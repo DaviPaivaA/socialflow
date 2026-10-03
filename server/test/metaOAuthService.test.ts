@@ -89,6 +89,7 @@ function fakeClient(
       { name: "pages_show_list", status: "granted" },
       { name: "pages_read_engagement", status: "granted" },
       { name: "instagram_basic", status: "granted" },
+      { name: "pages_manage_posts", status: "granted" },
     ]),
     listPages: vi.fn().mockResolvedValue([
       {
@@ -122,6 +123,7 @@ function fakeSocialRepository(
     assertContext: vi.fn(),
     disconnect: vi.fn(),
     findById: vi.fn(),
+    findFacebookPublishingCredential: vi.fn(),
     list: vi.fn(),
     register: vi.fn(),
     update: vi.fn(),
@@ -203,6 +205,7 @@ describe("MetaOAuthService", () => {
       "pages_show_list",
       "pages_read_engagement",
       "instagram_basic",
+      "pages_manage_posts",
     ]);
     expect(persisted?.accounts.map((account) => account.provider)).toEqual([
       "facebook",

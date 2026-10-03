@@ -25,6 +25,8 @@ async function shutdown(signal: string) {
   shutdownStarted = true;
   console.log(`Encerrando backend após ${signal}.`);
 
+  server.publicationScheduler.stop();
+  await server.publicationScheduler.whenIdle();
   await new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
@@ -33,7 +35,8 @@ async function shutdown(signal: string) {
 
 server.once("error", (error) => {
   console.error("Não foi possível iniciar o backend.", error);
-  void pool.end().finally(() => {
+  server.publicationScheduler.stop();
+  void server.publicationScheduler.whenIdle().then(() => pool.end()).finally(() => {
     process.exitCode = 1;
   });
 });
@@ -41,6 +44,7 @@ server.once("error", (error) => {
 try {
   await ensureMediaStorageReady(config.mediaStoragePath);
   server.listen(config.port, config.host, () => {
+    server.publicationScheduler.start();
     console.log(`Backend disponível em http://${config.host}:${config.port}.`);
   });
 } catch (error) {

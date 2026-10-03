@@ -312,7 +312,7 @@ function RoutedApp({
     composerDraftRevisionRef.current += 1;
   };
 
-  const schedulePost = async (input: CreatePostInput) => {
+  const submitPost = async (input: CreatePostInput) => {
     if (isLoadingPosts || submissionInFlightRef.current) {
       return;
     }
@@ -324,7 +324,8 @@ function RoutedApp({
     setIsSubmitting(true);
 
     try {
-      const post = await repository.create(submittedPayload);
+      const result = await repository.create(submittedPayload);
+      const { post, publications } = result;
       setScheduleNow(Date.now());
       setCreatedPosts((currentPosts) => [
         post,
@@ -336,9 +337,26 @@ function RoutedApp({
       ) {
         closeComposer();
       }
-      showToast("Publicação agendada com sucesso!", "success");
+      if (input.publicationMode === "scheduled") {
+        showToast("Publicação agendada com sucesso!", "success");
+      } else {
+        const publishedCount = publications.filter((publication) => publication.status === "published").length;
+        const failedCount = publications.filter((publication) => publication.status === "failed").length;
+        const pendingCount = publications.length - publishedCount - failedCount;
+        if (pendingCount > 0) {
+          showToast(`Publicação salva, mas o resultado ainda não foi confirmado: ${publishedCount} publicada(s), ${failedCount} falha(s), ${pendingCount} pendente(s).`, "error");
+        } else if (publishedCount > 0 && failedCount === 0) {
+          showToast("Publicação publicada com sucesso!", "success");
+        } else if (publishedCount > 0) {
+          showToast(`${publishedCount} publicada(s), ${failedCount} falha(s). A publicação foi salva.`, "error");
+        } else if (failedCount > 0) {
+          showToast(`${failedCount} destino(s) falharam. A publicação foi salva.`, "error");
+        } else {
+          showToast("Publicação salva, mas o resultado ainda não foi confirmado.", "error");
+        }
+      }
     } catch {
-      showToast("Não foi possível agendar a publicação.", "error");
+      showToast(input.publicationMode === "scheduled" ? "Não foi possível agendar a publicação." : "Não foi possível criar a publicação.", "error");
     } finally {
       submissionInFlightRef.current = false;
       setIsSubmitting(false);
@@ -377,7 +395,8 @@ function RoutedApp({
               mediaAssetsRepository={mediaAssetsRepository}
               onClose={closeComposer}
               onDraftChange={reviseComposerDraft}
-              onSchedule={schedulePost}
+              onSubmit={submitPost}
+              socialAccountsRepository={socialAccountsRepository}
               workspaceId={workspaceId}
             />
           )}

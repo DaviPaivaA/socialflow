@@ -36,6 +36,7 @@ function fakeRepository(register: SocialAccountsRepository["register"]) {
     assertContext: vi.fn(),
     disconnect: vi.fn(),
     findById: vi.fn(),
+    findFacebookPublishingCredential: vi.fn(),
     list: vi.fn(),
     register,
     update: vi.fn(),
