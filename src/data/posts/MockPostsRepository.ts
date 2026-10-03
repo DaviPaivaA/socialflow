@@ -1,4 +1,5 @@
 import { isValidScheduledFor } from "../../domain/scheduling";
+import type { CreatePostResponse, PostPublication } from "../../../shared/postPublicationContract";
 import type { Post } from "../../types/social";
 import { initialPosts } from "../mockData";
 import type { CreatePostInput, PostsRepository } from "./PostsRepository";
@@ -23,28 +24,45 @@ export class MockPostsRepository implements PostsRepository {
     return this.posts.map(clonePost);
   }
 
-  async create(input: CreatePostInput): Promise<Post> {
-    if (!isValidScheduledFor(input.scheduledFor)) {
+  async create(input: CreatePostInput): Promise<CreatePostResponse> {
+    if (input.publicationMode === "scheduled" && !isValidScheduledFor(input.scheduledFor)) {
       throw new Error("O agendamento da publicação é inválido.");
     }
 
     const now = new Date().toISOString();
+    const scheduledFor = input.publicationMode === "now" ? now : input.scheduledFor!;
+    const isImmediate = input.publicationMode === "now";
     const post: Post = {
       authorUserId: MOCK_AUTHOR_USER_ID,
       caption: input.caption,
       createdAt: now,
       id: crypto.randomUUID(),
       mediaAssetIds: [...(input.mediaAssetIds ?? [])],
-      publishedAt: null,
+      publishedAt: isImmediate ? now : null,
       ragRunId: null,
-      scheduledFor: input.scheduledFor,
-      status: input.status,
+      scheduledFor,
+      status: isImmediate ? "published" : "scheduled",
       tenantId: this.tenantId,
       title: input.title ?? null,
       updatedAt: now,
     };
     this.posts.unshift(post);
 
-    return clonePost(post);
+    const publications: PostPublication[] = input.socialAccountIds.map((socialAccountId) => ({
+      createdAt: now,
+      errorCode: null,
+      errorMessage: null,
+      failedAt: null,
+      id: crypto.randomUUID(),
+      postId: post.id,
+      providerPostId: isImmediate ? `mock_${crypto.randomUUID()}` : null,
+      publishedAt: isImmediate ? now : null,
+      socialAccountId,
+      startedAt: isImmediate ? now : null,
+      status: isImmediate ? "published" : "scheduled",
+      tenantId: this.tenantId,
+      updatedAt: now,
+    }));
+    return { post: clonePost(post), publications };
   }
 }

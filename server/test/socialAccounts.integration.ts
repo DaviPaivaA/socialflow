@@ -125,10 +125,8 @@ describe("contas sociais HTTP com PostgreSQL", () => {
     await adminPool.query(`CREATE SCHEMA "${schema}"`);
     const pool = schemaPool(databaseUrl, schema);
     const cipher = new SocialTokenCipher(Buffer.alloc(32, 19));
-    const service = new SocialAccountsService(
-      new PostgresSocialAccountsRepository(pool),
-      cipher,
-    );
+    const repository = new PostgresSocialAccountsRepository(pool);
+    const service = new SocialAccountsService(repository, cipher);
     let server: Server | undefined;
 
     try {
@@ -211,8 +209,9 @@ describe("contas sociais HTTP com PostgreSQL", () => {
         displayName: "Facebook A",
         provider: "facebook",
         providerAccountId: "facebook-a",
-        scopes: ["pages_show_list"],
+        scopes: ["pages_show_list", "pages_manage_posts"],
         status: "connected",
+        tokenExpiresAt: "2099-01-01T00:00:00.000Z",
       });
       const tiktokB = await service.register(contextB, {
         accessToken: "plaintext-tiktok-b",
@@ -228,6 +227,40 @@ describe("contas sociais HTTP com PostgreSQL", () => {
         providerAccountId: "instagram-c",
         status: "connected",
       });
+      await pool.query(
+        `UPDATE social_accounts
+         SET metadata = '{"tasks":["ANALYZE","CREATE_CONTENT"]}'::jsonb
+         WHERE tenant_id = $1::uuid AND id = $2::uuid`,
+        [tenantA, facebookA.id],
+      );
+      const publishingCredential = await repository.findFacebookPublishingCredential(
+        contextA,
+        facebookA.id,
+      );
+      expect(publishingCredential).toEqual({
+        accessTokenEncrypted: expect.stringMatching(/^v1\./),
+        providerAccountId: "facebook-a",
+        scopes: ["pages_show_list", "pages_manage_posts"],
+        tasks: ["ANALYZE", "CREATE_CONTENT"],
+        tokenExpiresAt: "2099-01-01T00:00:00.000Z",
+      });
+      expect(cipher.decryptSecret(publishingCredential!.accessTokenEncrypted!)).toBe(
+        "plaintext-facebook-a",
+      );
+      await expect(
+        repository.findFacebookPublishingCredential(contextB, facebookA.id),
+      ).resolves.toBeNull();
+      await expect(
+        repository.findFacebookPublishingCredential(contextA, instagramA.id),
+      ).resolves.toBeNull();
+      await pool.query(
+        `UPDATE social_accounts SET metadata = '{"tasks":["CREATE_CONTENT",42]}'::jsonb
+         WHERE tenant_id = $1::uuid AND id = $2::uuid`,
+        [tenantA, facebookA.id],
+      );
+      await expect(
+        repository.findFacebookPublishingCredential(contextA, facebookA.id),
+      ).resolves.toEqual(expect.objectContaining({ tasks: [] }));
       await expect(
         service.register(contextA, {
           displayName: "Duplicada",
@@ -248,6 +281,7 @@ describe("contas sociais HTTP com PostgreSQL", () => {
       expect(serializedA).not.toContain("plaintext");
       expect(serializedA).not.toContain("Encrypted");
       expect(serializedA).not.toContain("providerMetadata");
+      expect(serializedA).not.toMatch(/"(?:accessToken|refreshToken|tasks)"/);
 
       const ownById = await apiFetch(
         `${baseUrl}/social-accounts/${instagramA.id}`,

@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   HttpMetaOAuthClient,
-  META_OAUTH_SCOPES,
   MetaOAuthClientError,
   type EnabledMetaOAuthConfig,
 } from "../src/metaOAuthClient.ts";
@@ -26,7 +25,7 @@ function clientWith(fetchImpl: typeof fetch, timeoutMs = 1_000) {
 }
 
 describe("HttpMetaOAuthClient", () => {
-  it("cria URL versionada com somente os três scopes de descoberta", () => {
+  it("inclui permissão de publicação de Page sem pedir publicação Instagram", () => {
     const client = clientWith(vi.fn<typeof fetch>());
     const url = new URL(client.buildAuthorizationUrl(state));
 
@@ -35,11 +34,13 @@ describe("HttpMetaOAuthClient", () => {
     expect(url.searchParams.get("client_id")).toBe(config.appId);
     expect(url.searchParams.get("redirect_uri")).toBe(config.redirectUri);
     expect(url.searchParams.get("state")).toBe(state);
-    expect(url.searchParams.get("scope")?.split(",")).toEqual(
-      META_OAUTH_SCOPES,
-    );
-    for (const forbidden of [
+    expect(url.searchParams.get("scope")?.split(",")).toEqual([
+      "pages_show_list",
+      "pages_read_engagement",
+      "instagram_basic",
       "pages_manage_posts",
+    ]);
+    for (const forbidden of [
       "instagram_content_publish",
       "instagram_manage_insights",
       "instagram_manage_comments",

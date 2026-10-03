@@ -9,6 +9,8 @@ no GitHub Pages.
 - painel com indicadores de desempenho;
 - calendário editorial semanal;
 - criação e agendamento de publicações em memória ou PostgreSQL local;
+- publicação real de texto ou texto com uma imagem em uma ou várias Facebook Pages
+  conectadas, imediatamente ou no horário agendado;
 - cadastro, login e logout com sessão persistida no PostgreSQL;
 - listagem e troca explícita de Workspace para usuários com múltiplos memberships;
 - isolamento de publicações pelo tenant autenticado;
@@ -23,7 +25,6 @@ no GitHub Pages.
 É necessário usar Node.js 22.22.0 ou superior dentro da série 22, ou Node.js 24
 ou superior. A série 23 não é suportada. Para o modo HTTP, também é necessário
 ter um servidor PostgreSQL disponível.
-ou superior. A série 23 não é suportada.
 
 ```bash
 npm install
@@ -146,7 +147,8 @@ cookie `SameSite=Lax` permaneça first-party. A API oferece:
 - `GET /auth/meta/callback`, que consome o state e conclui a descoberta no
   backend;
 - `GET /posts`, que lista os posts do tenant autenticado;
-- `POST /posts`, que persiste com tenant e autor autenticados.
+- `POST /posts`, que cria o Post e seus destinos com tenant e autor autenticados,
+  e publica imediatamente quando `publicationMode` é `now`;
 - `GET /social-accounts`, que lista as contas do Workspace autenticado;
 - `GET /social-accounts/:id`, que consulta uma conta no mesmo Workspace;
 - `PATCH /social-accounts/:id`, que altera apenas nome, username e imagem;
@@ -173,17 +175,19 @@ arquivo temporário, calcula SHA-256, move o arquivo para
 metadados em `media_assets`. Se o INSERT falhar, a API tenta remover o arquivo
 movido. O nome original é apenas metadado sanitizado; não define o caminho.
 `GET` de metadados nunca expõe `storage_key`, SHA-256 ou caminhos internos.
-Os arquivos não são publicados na Meta.
+Para a publicação 6D, a API lê a mídia privada no backend e envia os bytes da
+imagem selecionada à Meta, sem criar uma URL pública.
 
 ### Relação Post–mídia — Etapa 6B
 
 `media_assets` armazena os metadados do upload; `post_media` relaciona um Post
 a uma mídia do mesmo Workspace sem mover ou copiar o arquivo físico. O
 `POST /posts` aceita `mediaAssetIds` opcional: ausente ou `[]` cria um Post sem
-mídia; `["UUID da mídia"]` vincula uma mídia já enviada. Nesta etapa, no máximo
+mídia; `["UUID da mídia"]` vincula uma mídia já enviada. Na 6D, no máximo
 um ID é aceito. A resposta e `GET /posts` sempre incluem `mediaAssetIds: []`
-quando não houver relação, inclusive para Posts antigos. A ordem é definida por
-`post_media.position`, preparando múltiplas mídias ordenadas no futuro.
+no objeto Post quando não houver relação, inclusive para Posts antigos. A ordem
+é definida por `post_media.position`, preparando múltiplas mídias ordenadas no
+futuro.
 
 A API valida a mídia não excluída dentro do tenant da sessão e cria Post e
 relação na mesma transação. Mídia inexistente, de outro Workspace ou marcada
@@ -198,7 +202,7 @@ bloqueado. Não há endpoint de exclusão de mídia nesta etapa.
 
 O Composer carrega a biblioteca do Workspace atual, permite reutilizar uma
 mídia ou enviar uma foto/vídeo imediatamente, mostra preview local durante o
-upload e envia `mediaAssetIds` com zero ou um ID no agendamento. É possível
+upload e envia `mediaAssetIds` com zero ou um ID na criação. É possível
 continuar criando Posts sem mídia. A troca de Workspace limpa a seleção e
 descarta respostas tardias da listagem ou do upload anterior. No modo mock, a
 biblioteca permanece local; no modo HTTP, utiliza a API autenticada.
@@ -207,8 +211,37 @@ biblioteca permanece local; no modo HTTP, utiliza a API autenticada.
 da mídia. O conteúdo é transmitido em stream, com `Cache-Control: private,
 no-store` e `X-Content-Type-Options: nosniff`; `GET` suporta um único byte
 range para seek de vídeo. A URL serve somente ao usuário autenticado e **não é
-uma URL pública para a Meta**. A 6C não possui migration nova, não oferece
-exclusão de mídia e não implementa publicação real.
+uma URL pública para a Meta**. A 6C não possui migration nova nem oferece
+exclusão de mídia. A publicação real no Facebook foi adicionada na 6D.
+
+### Publicação no Facebook — Etapa 6D
+
+No modo HTTP, o Composer permite selecionar uma ou várias Facebook Pages
+conectadas no Workspace e escolher **Publicar agora** ou **Agendar**. Aceita
+texto puro ou texto com uma única imagem JPEG/PNG de até **4.000.000 bytes**.
+O upload e preview continuam aceitando outros formatos e tamanhos da 6A, mas
+WebP, imagens maiores e vídeos não podem ser publicados na 6D. Também não há
+carousel, publicação real no Instagram ou TikTok nesta etapa.
+
+`POST /posts` persiste o Post e um resultado por Page na mesma transação. Em
+`publicationMode: "now"`, o backend tenta publicar em cada Page após o commit e
+retorna `201` com os resultados persistidos; a falha de uma Page não impede a
+tentativa nas demais. O status agregado do Post será `published` quando todas
+forem publicadas, `partially_failed` quando algumas forem publicadas e outras
+falharem, ou `failed` quando todas falharem. Pode permanecer `publishing`
+enquanto algum resultado ainda não foi confirmado. Em
+`publicationMode: "scheduled"`, retorna `201` com status `scheduled` sem chamar
+a Meta naquele momento. O scheduler roda no processo da API, verifica destinos
+vencidos aproximadamente a cada 15 segundos
+e também os encontra após reiniciar a API. Não exige worker separado.
+
+Cada destino registra seu status, ID da publicação na Meta quando houver,
+código e mensagem seguros de erro, e horários relevantes. A 6D não faz retry
+automático ou manual. Se um destino permanecer em `publishing` por mais de dez
+minutos, o scheduler o marca como `failed` com
+`publication_state_unknown`, sem reenviar à Meta: ela pode ter publicado antes
+de a API perder a confirmação. A mídia permanece privada no SocialFlow; a API
+envia os bytes da imagem à Meta a partir do armazenamento privado.
 
 No futuro deploy Docker, use por exemplo `MEDIA_STORAGE_PATH=/app/data/media`
 na API e um bind mount persistente como `./data/media:/app/data/media` para
@@ -277,51 +310,78 @@ logout são sincronizados entre abas por `BroadcastChannel`, com fallback para
 eventos de storage contendo somente o tipo do evento — sessão e tokens nunca
 são gravados no storage nem transmitidos entre abas.
 
-Tanto a criação quanto os itens retornados pela API usam `scheduledFor` como a
-única fonte do agendamento. O valor deve ser um timestamp ISO 8601 com fuso
-explícito (`Z` ou `±HH:MM`); datas sem ano, rótulos como `"13 ago"` e horários
-sem fuso não são aceitos.
+Para agendar, `scheduledFor` é a fonte do horário. O valor deve ser um
+timestamp ISO 8601 com fuso explícito (`Z` ou `±HH:MM`); datas sem ano, rótulos
+como `"13 ago"` e horários sem fuso não são aceitos. Para publicar agora,
+`publicationMode` é `"now"` e `scheduledFor` deve ser omitido no pedido. O
+backend grava em `scheduledFor` o instante de criação, que torna o Post elegível
+para publicação imediata.
 
 Neste MVP, a data e o horário escolhidos no formulário são interpretados no
 fuso local do navegador. O instante correspondente é convertido corretamente
-para UTC antes do `POST`. Por exemplo, a seleção de 13/08/2026 às 10:00 em um
-navegador no fuso UTC-03 gera:
+para UTC antes do `POST`. Por exemplo, a seleção de 13/10/2026 às 10:00 em um
+navegador no fuso UTC-03 gera este corpo, supondo uma Page já conectada:
 
 ```json
 {
   "title": "Nova publicação",
   "caption": "Conteúdo programado.",
-  "scheduledFor": "2026-08-13T13:00:00.000Z",
-  "status": "scheduled"
+  "publicationMode": "scheduled",
+  "scheduledFor": "2026-10-13T13:00:00.000Z",
+  "socialAccountIds": ["44444444-4444-4444-8444-444444444444"],
+  "mediaAssetIds": []
 }
 ```
 
-O `POST /posts` associa `tenantId` e `authorUserId` exclusivamente a partir da
-sessão validada no servidor. A resposta e cada item de `GET /posts` usam o
-contrato abaixo:
+Para publicar imediatamente, envie `publicationMode: "now"`, a legenda,
+`socialAccountIds` e, opcionalmente, `mediaAssetIds` com um ID de imagem
+compatível. O servidor rejeita `status` no corpo e calcula esse valor. Se o
+cliente enviar `tenantId` ou `authorUserId`, esses campos são ignorados: tenant
+e autor são obtidos da sessão validada.
+
+O `POST /posts` retorna `201` com `{ "post": ..., "publications": [...] }`.
+Um resultado agendado tem a forma abaixo; `GET /posts` continua retornando a
+lista de objetos `Post`, sem o wrapper de criação:
 
 ```json
 {
-  "id": "33333333-3333-4333-8333-333333333333",
-  "tenantId": "11111111-1111-4111-8111-111111111111",
-  "authorUserId": "22222222-2222-4222-8222-222222222222",
-  "ragRunId": null,
-  "title": "Nova publicação",
-  "caption": "Conteúdo programado.",
-  "status": "scheduled",
-  "scheduledFor": "2026-08-13T13:00:00.000Z",
-  "mediaAssetIds": [],
-  "publishedAt": null,
-  "createdAt": "2026-08-10T12:00:00.000Z",
-  "updatedAt": "2026-08-10T12:00:00.000Z"
+  "post": {
+    "id": "33333333-3333-4333-8333-333333333333",
+    "tenantId": "11111111-1111-4111-8111-111111111111",
+    "authorUserId": "22222222-2222-4222-8222-222222222222",
+    "ragRunId": null,
+    "title": "Nova publicação",
+    "caption": "Conteúdo programado.",
+    "status": "scheduled",
+    "scheduledFor": "2026-10-13T13:00:00.000Z",
+    "mediaAssetIds": [],
+    "publishedAt": null,
+    "createdAt": "2026-10-10T12:00:00.000Z",
+    "updatedAt": "2026-10-10T12:00:00.000Z"
+  },
+  "publications": [{
+    "id": "55555555-5555-4555-8555-555555555555",
+    "tenantId": "11111111-1111-4111-8111-111111111111",
+    "postId": "33333333-3333-4333-8333-333333333333",
+    "socialAccountId": "44444444-4444-4444-8444-444444444444",
+    "status": "scheduled",
+    "providerPostId": null,
+    "errorCode": null,
+    "errorMessage": null,
+    "startedAt": null,
+    "publishedAt": null,
+    "failedAt": null,
+    "createdAt": "2026-10-10T12:00:00.000Z",
+    "updatedAt": "2026-10-10T12:00:00.000Z"
+  }]
 }
 ```
 
 Todos os identificadores persistidos são UUID. Data e horário abreviados são
 derivados de `scheduledFor` somente na interface; o PostgreSQL armazena o
 instante em `scheduled_for timestamptz`. `channels` e `color` não pertencem ao
-contrato persistente de `Post`: a cor é derivada do status na apresentação, e
-os futuros destinos sociais serão modelados por `post_targets` e
+contrato persistente de `Post`: a cor é derivada do status na apresentação.
+Os destinos são persistidos em `post_publications` e referenciam
 `social_accounts`.
 
 ## Contas sociais (Etapa 5A)
@@ -429,10 +489,15 @@ A autorização solicita somente:
 
 - `pages_show_list`;
 - `pages_read_engagement`;
-- `instagram_basic`.
+- `instagram_basic`;
+- `pages_manage_posts`.
 
-`pages_manage_posts` e `instagram_content_publish` serão avaliadas somente na
-Etapa 6. Permissões de insights/Analytics ficam para a Etapa 7. O backend
+Após implantar a 6D, reconecte as contas Meta conectadas antes da implantação
+para conceder `pages_manage_posts` e atualizar as credenciais e permissões
+persistidas. Confirme que as Facebook Pages aparecem como conectadas antes de
+publicar. Sem essa permissão e a task `CREATE_CONTENT` da Page, a 6D rejeita a
+Page como destino. `instagram_content_publish` ainda não é solicitada;
+permissões de insights/Analytics ficam para a Etapa 7. O backend
 consulta `/me/permissions` e não assume que tudo foi concedido. Sem
 `pages_show_list`, a conexão falha; sem as permissões necessárias ao Instagram,
 as Facebook Pages válidas ainda podem ser importadas, mas o perfil Instagram é
@@ -485,7 +550,15 @@ uso seguro de um novo valor de enum. A migration
 `007_add_oauth_authorization_requests.sql` cria pedidos OAuth provider-neutral,
 com state em hash, expiração, consumo e FK composta para a sessão/membership;
 ela não insere dados fake. `auth_sessions.membership_id` continua
-representando o Workspace ativo. Para aplicar as migrations, execute:
+representando o Workspace ativo. A migration
+`010_add_post_publications.sql` cria `post_publications`, com um resultado por
+Page, chave única por Post e destino e FKs compostas por tenant para Post e
+conta social. Também adiciona índices para localizar publicações vencidas e
+reconciliar status; se necessário, adiciona a chave composta compatível em
+`social_accounts`. As migrations `008` e `009` permanecem inalteradas. Aplique
+a `010` antes de iniciar a API 6D; depois de reconstruir frontend e backend,
+reconecte as contas Meta existentes conforme indicado acima. Para aplicar as
+migrations, execute:
 
 ```bash
 npm run db:migrate

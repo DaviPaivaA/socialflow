@@ -13,6 +13,7 @@ export type CreateMediaAssetRecord = {
 };
 
 export type StoredMediaAsset = {
+  sha256: string;
   id: string;
   mediaType: MediaType;
   mimeType: string;
@@ -43,6 +44,7 @@ type MediaRow = QueryResultRow & {
 };
 
 type StoredMediaRow = QueryResultRow & {
+  sha256: string;
   id: string;
   media_type: MediaType;
   mime_type: string;
@@ -118,7 +120,7 @@ export class PostgresMediaAssetsRepository implements MediaAssetsRepository {
 
   async findStoredById(context: PostsContext, id: string): Promise<StoredMediaAsset | null> {
     const result = await this.pool.query<StoredMediaRow>(`
-      SELECT id, media_type, mime_type, size_bytes, storage_key
+      SELECT id, media_type, mime_type, size_bytes, storage_key, sha256
       FROM media_assets
       WHERE tenant_id = $1::uuid AND id = $2::uuid AND deleted_at IS NULL
     `, [context.tenantId, id]);
@@ -129,6 +131,7 @@ export class PostgresMediaAssetsRepository implements MediaAssetsRepository {
       mimeType: row.mime_type,
       sizeBytes: Number(row.size_bytes),
       storageKey: row.storage_key,
+      sha256: row.sha256,
     } : null;
   }
 }

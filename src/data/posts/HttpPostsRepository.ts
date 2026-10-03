@@ -1,4 +1,5 @@
 import { isPost } from "../../../shared/postContract";
+import { isCreatePostResponse, type CreatePostResponse } from "../../../shared/postPublicationContract";
 import { isValidScheduledFor } from "../../domain/scheduling";
 import type { Post } from "../../types/social";
 import type { ApiClient } from "../api/apiClient";
@@ -20,19 +21,27 @@ export class HttpPostsRepository implements PostsRepository {
     return posts;
   }
 
-  async create(post: CreatePostInput): Promise<Post> {
-    if (!isValidScheduledFor(post.scheduledFor)) {
+  async create(post: CreatePostInput): Promise<CreatePostResponse> {
+    if (post.publicationMode === "scheduled" && !isValidScheduledFor(post.scheduledFor)) {
       throw new Error(
         "A publicação não possui um agendamento ISO 8601 válido.",
       );
     }
 
+    const payload: CreatePostInput = {
+      caption: post.caption,
+      ...(post.mediaAssetIds !== undefined ? { mediaAssetIds: [...post.mediaAssetIds] } : {}),
+      publicationMode: post.publicationMode,
+      ...(post.publicationMode === "scheduled" ? { scheduledFor: post.scheduledFor } : {}),
+      socialAccountIds: [...post.socialAccountIds],
+      ...(post.title !== undefined ? { title: post.title } : {}),
+    };
     const createdPost = await this.apiClient.post<unknown, CreatePostInput>(
       "/posts",
-      post,
+      payload,
     );
 
-    if (!isPost(createdPost)) {
+    if (!isCreatePostResponse(createdPost)) {
       throw new Error(
         "A API não retornou a publicação criada. A resposta recebida é inválida.",
       );

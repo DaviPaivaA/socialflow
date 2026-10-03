@@ -20,6 +20,8 @@ import { HttpPostsRepository } from "./data/posts/HttpPostsRepository";
 import type { PostsRepository } from "./data/posts/PostsRepository";
 import { getPostTitle } from "./domain/postPresentation";
 import type { Post } from "./types/social";
+import { MockSocialAccountsRepository, initialSocialAccounts } from "./data/socialAccounts/MockSocialAccountsRepository";
+import type { CreatePostResponse, PostPublication } from "../shared/postPublicationContract";
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -47,6 +49,47 @@ const createdPost: Post = {
   caption: "Publicação criada após a resposta controlada.",
   scheduledFor: "2098-01-14T11:00:00-03:00",
 };
+
+const pageId = "70000000-0000-4000-8000-000000000002";
+
+function createResult(post: Post, states: Array<"scheduled" | "publishing" | "published" | "failed"> = ["scheduled"]): CreatePostResponse {
+  return {
+    post,
+    publications: states.map((status, index): PostPublication => ({
+      createdAt: "2026-09-27T12:00:00.000Z",
+      errorCode: status === "failed" ? "meta_provider_error" : null,
+      errorMessage: status === "failed" ? "Falha ao publicar." : null,
+      failedAt: status === "failed" ? "2026-09-27T12:00:00.000Z" : null,
+      id: uuid(900 + index),
+      postId: post.id,
+      providerPostId: status === "published" ? `page_post_${index}` : null,
+      publishedAt: status === "published" ? "2026-09-27T12:00:00.000Z" : null,
+      socialAccountId: index === 0 ? pageId : uuid(800 + index),
+      startedAt: status === "scheduled" ? null : "2026-09-27T12:00:00.000Z",
+      status,
+      tenantId: post.tenantId,
+      updatedAt: "2026-09-27T12:00:00.000Z",
+    })),
+  };
+}
+
+async function selectComposerPage(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("checkbox", { name: "Café Aurora" }));
+}
+
+async function scheduledSubmitButton() {
+  await act(async () => { await Promise.resolve(); });
+  const page = screen.getByRole("checkbox", { name: "Café Aurora" });
+  if (!(page as HTMLInputElement).checked) fireEvent.click(page);
+  const mode = screen.getByRole("radio", { name: "Agendar" });
+  if (!(mode as HTMLInputElement).checked) fireEvent.click(mode);
+  return screen.getByRole("button", { name: "Agendar publicação" });
+}
+
+async function scheduledDateInput() {
+  await scheduledSubmitButton();
+  return screen.getByLabelText("Data");
+}
 
 const composerMediaAsset: MediaAsset = {
   createdAt: "2026-09-25T12:00:00.000Z", durationMs: null, height: null,
@@ -348,8 +391,8 @@ describe("SocialFlow", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 7, 12, 9));
     const pendingList = deferred<Post[]>();
-    const laterCreate = deferred<Post>();
-    const earlierCreate = deferred<Post>();
+    const laterCreate = deferred<CreatePostResponse>();
+    const earlierCreate = deferred<CreatePostResponse>();
     const listedPost: Post = {
       ...initialPosts[0],
       id: uuid(611),
@@ -390,17 +433,17 @@ describe("SocialFlow", () => {
       fireEvent.change(screen.getByRole("textbox", { name: /^Legenda/ }), {
         target: { value: "Agendamento posterior." },
       });
-      fireEvent.change(screen.getByLabelText("Data"), {
+      fireEvent.change((await scheduledDateInput()), {
         target: { value: "2026-08-20" },
       });
       fireEvent.submit(
-        screen.getByRole("button", { name: "Agendar publicação" }).closest(
+        (await scheduledSubmitButton()).closest(
           "form",
         )!,
       );
 
       await act(async () => {
-        laterCreate.resolve(laterPost);
+        laterCreate.resolve(createResult(laterPost));
         await laterCreate.promise;
       });
 
@@ -413,17 +456,17 @@ describe("SocialFlow", () => {
       fireEvent.change(screen.getByRole("textbox", { name: /^Legenda/ }), {
         target: { value: "Agendamento anterior." },
       });
-      fireEvent.change(screen.getByLabelText("Data"), {
+      fireEvent.change((await scheduledDateInput()), {
         target: { value: "2026-08-13" },
       });
       fireEvent.submit(
-        screen.getByRole("button", { name: "Agendar publicação" }).closest(
+        (await scheduledSubmitButton()).closest(
           "form",
         )!,
       );
 
       await act(async () => {
-        earlierCreate.resolve(earlierPost);
+        earlierCreate.resolve(createResult(earlierPost));
         await earlierCreate.promise;
       });
 
@@ -647,8 +690,8 @@ describe("SocialFlow", () => {
   it("reinicia o prazo quando a mesma falha é emitida novamente", async () => {
     vi.useFakeTimers();
     const pendingList = deferred<Post[]>();
-    const firstCreate = deferred<Post>();
-    const secondCreate = deferred<Post>();
+    const firstCreate = deferred<CreatePostResponse>();
+    const secondCreate = deferred<CreatePostResponse>();
     const create = vi
       .fn<PostsRepository["create"]>()
       .mockImplementationOnce(() => firstCreate.promise)
@@ -674,9 +717,7 @@ describe("SocialFlow", () => {
         target: { value: "Publicação que falhará duas vezes." },
       });
 
-      const submitButton = screen.getByRole("button", {
-        name: "Agendar publicação",
-      });
+      const submitButton = (await scheduledSubmitButton());
       const form = submitButton.closest("form");
       expect(form).not.toBeNull();
 
@@ -786,7 +827,7 @@ describe("SocialFlow", () => {
     window.location.hash = "#/publicacoes";
     const user = userEvent.setup();
     const pendingList = deferred<Post[]>();
-    const pendingCreate = deferred<Post>();
+    const pendingCreate = deferred<CreatePostResponse>();
     const create = vi.fn(() => pendingCreate.promise);
     const repository: PostsRepository = {
       create,
@@ -809,11 +850,11 @@ describe("SocialFlow", () => {
       "Post confirmado mesmo com a lista incompleta.",
     );
     await user.click(
-      screen.getByRole("button", { name: "Agendar publicação" }),
+      (await scheduledSubmitButton()),
     );
 
     await act(async () => {
-      pendingCreate.resolve(createdPost);
+      pendingCreate.resolve(createResult(createdPost));
       await pendingCreate.promise;
     });
 
@@ -880,6 +921,55 @@ describe("SocialFlow", () => {
     ).toBeInTheDocument();
   });
 
+  it.each([
+    { caseName: "agendada", mode: "scheduled", states: ["scheduled"] as Array<"scheduled" | "published" | "failed">, status: "scheduled", message: /agendada com sucesso/i, variant: "toast--success" },
+    { caseName: "todas publicadas", mode: "now", states: ["published", "published"] as Array<"scheduled" | "published" | "failed">, status: "published", message: /publicada com sucesso/i, variant: "toast--success" },
+    { caseName: "publicação parcial", mode: "now", states: ["published", "failed"] as Array<"scheduled" | "published" | "failed">, status: "partially_failed", message: /1.*publicada.*1.*falh/i, variant: "toast--error" },
+    { caseName: "todas falharam", mode: "now", states: ["failed", "failed"] as Array<"scheduled" | "published" | "failed">, status: "failed", message: /2.*falh/i, variant: "toast--error" },
+    { caseName: "todas pendentes", mode: "now", states: ["publishing", "scheduled"] as Array<"scheduled" | "publishing" | "published" | "failed">, status: "scheduled", message: /resultado ainda não foi confirmado: 0 publicada\(s\), 0 falha\(s\), 2 pendente\(s\)/i, variant: "toast--error" },
+    { caseName: "publicada e pendente", mode: "now", states: ["published", "publishing"] as Array<"scheduled" | "publishing" | "published" | "failed">, status: "scheduled", message: /resultado ainda não foi confirmado: 1 publicada\(s\), 0 falha\(s\), 1 pendente\(s\)/i, variant: "toast--error" },
+    { caseName: "falha e pendente", mode: "now", states: ["failed", "publishing"] as Array<"scheduled" | "publishing" | "published" | "failed">, status: "scheduled", message: /resultado ainda não foi confirmado: 0 publicada\(s\), 1 falha\(s\), 1 pendente\(s\)/i, variant: "toast--error" },
+  ])("preserva o post e mostra feedback para $caseName", async ({ mode, states, status, message, variant }) => {
+    const user = userEvent.setup();
+    const persisted = { ...createdPost, status: status as Post["status"] };
+    const create = vi.fn().mockResolvedValue(createResult(persisted, states));
+    const socialAccountsRepository = new MockSocialAccountsRepository([
+      initialSocialAccounts[1],
+      { ...initialSocialAccounts[1], id: uuid(801), displayName: "Café Centro" },
+    ]);
+    render(<App repository={{ list: vi.fn().mockResolvedValue([]), create }} socialAccountsRepository={socialAccountsRepository} />);
+    await screen.findByText("Nenhuma publicação agendada");
+    await user.click(screen.getByRole("button", { name: /Criar publicação/i }));
+    await selectComposerPage(user);
+    if (states.length > 1) await user.click(screen.getByRole("checkbox", { name: "Café Centro" }));
+    await user.type(screen.getByRole("textbox", { name: /^Legenda/ }), "Teste de resultado persistido.");
+    if (mode === "scheduled") await user.click(screen.getByRole("radio", { name: "Agendar" }));
+    await user.click(screen.getByRole("button", { name: mode === "scheduled" ? "Agendar publicação" : "Publicar agora" }));
+    const toast = await screen.findByText(message);
+    expect(toast).toHaveClass(variant);
+    expect(screen.queryByRole("heading", { name: "Criar publicação" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Publicações/ }));
+    expect(screen.getByText(getPostTitle(persisted))).toBeInTheDocument();
+  });
+
+  it("envia somente os campos autorizados e omite scheduledFor ao publicar agora", async () => {
+    const user = userEvent.setup();
+    const create = vi.fn().mockResolvedValue(createResult({ ...createdPost, status: "published" }, ["published"]));
+    render(<App repository={{ list: vi.fn().mockResolvedValue([]), create }} />);
+    await screen.findByText("Nenhuma publicação agendada");
+    await user.click(screen.getByRole("button", { name: /Criar publicação/i }));
+    await selectComposerPage(user);
+    await user.type(screen.getByRole("textbox", { name: /^Legenda/ }), "Publicar agora sem data.");
+    await user.click(screen.getByRole("button", { name: "Publicar agora" }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const payload = create.mock.calls[0][0];
+    expect(payload).toEqual({ caption: "Publicar agora sem data.", mediaAssetIds: [], publicationMode: "now", socialAccountIds: [pageId], title: "Publicar agora sem data" });
+    expect(payload).not.toHaveProperty("scheduledFor");
+    expect(payload).not.toHaveProperty("status");
+    expect(payload).not.toHaveProperty("tenantId");
+    expect(payload).not.toHaveProperty("authorUserId");
+  });
+
   it("cria uma publicação simulada", async () => {
     const user = userEvent.setup();
     const caption =
@@ -892,7 +982,7 @@ describe("SocialFlow", () => {
     );
     await user.type(screen.getByRole("textbox", { name: /^Legenda/ }), caption);
     await user.click(
-      screen.getByRole("button", { name: /Agendar publicação/i }),
+      (await scheduledSubmitButton()),
     );
 
     const successToast = await screen.findByRole("status");
@@ -922,19 +1012,15 @@ describe("SocialFlow", () => {
 
       const post = JSON.parse(String(init?.body)) as Record<string, unknown>;
       sentPosts.push(post);
-      const timestamp = new Date().toISOString();
       return new Response(
-        JSON.stringify({
-          ...post,
-          authorUserId: "22222222-2222-4222-8222-222222222222",
-          createdAt: timestamp,
+        JSON.stringify(createResult({
+          ...createdPost,
+          caption: String(post.caption),
           id: uuid(700 + sentPosts.length),
-          mediaAssetIds: [],
-          publishedAt: null,
-          ragRunId: null,
-          tenantId: "11111111-1111-4111-8111-111111111111",
-          updatedAt: timestamp,
-        }),
+          scheduledFor: String(post.scheduledFor),
+          status: "scheduled",
+          title: String(post.title),
+        })),
         {
           headers: { "Content-Type": "application/json" },
           status: 201,
@@ -962,14 +1048,14 @@ describe("SocialFlow", () => {
       screen.getByRole("textbox", { name: /^Legenda/ }),
       "Agendamento de 2026.",
     );
-    fireEvent.change(screen.getByLabelText("Data"), {
+    fireEvent.change((await scheduledDateInput()), {
       target: { value: "2026-08-13" },
     });
     fireEvent.change(screen.getByLabelText("Horário"), {
       target: { value: "10:00" },
     });
     await user.click(
-      screen.getByRole("button", { name: "Agendar publicação" }),
+      (await scheduledSubmitButton()),
     );
 
     await waitFor(() =>
@@ -985,14 +1071,14 @@ describe("SocialFlow", () => {
       screen.getByRole("textbox", { name: /^Legenda/ }),
       "Agendamento de 2027.",
     );
-    fireEvent.change(screen.getByLabelText("Data"), {
+    fireEvent.change((await scheduledDateInput()), {
       target: { value: "2027-08-13" },
     });
     fireEvent.change(screen.getByLabelText("Horário"), {
       target: { value: "10:00" },
     });
     await user.click(
-      screen.getByRole("button", { name: "Agendar publicação" }),
+      (await scheduledSubmitButton()),
     );
 
     await waitFor(() => expect(sentPosts).toHaveLength(2));
@@ -1040,9 +1126,7 @@ describe("SocialFlow", () => {
       "Tentativa durante o carregamento.",
     );
 
-    const submitButton = screen.getByRole("button", {
-      name: "Agendar publicação",
-    });
+    const submitButton = (await scheduledSubmitButton());
     const form = submitButton.closest("form");
 
     expect(submitButton).toBeDisabled();
@@ -1062,7 +1146,7 @@ describe("SocialFlow", () => {
 
   it("preserva um post criado após o início de uma listagem antiga", async () => {
     const user = userEvent.setup();
-    const pendingCreate = deferred<Post>();
+    const pendingCreate = deferred<CreatePostResponse>();
     const pendingStaleList = deferred<Post[]>();
     const firstRepository: PostsRepository = {
       create: vi.fn(() => pendingCreate.promise),
@@ -1082,9 +1166,7 @@ describe("SocialFlow", () => {
       "Publicação preservada contra lista antiga.",
     );
 
-    const submitButton = screen.getByRole("button", {
-      name: "Agendar publicação",
-    });
+    const submitButton = (await scheduledSubmitButton());
 
     await waitFor(() => expect(submitButton).toBeEnabled());
     await user.click(submitButton);
@@ -1092,7 +1174,7 @@ describe("SocialFlow", () => {
     rerender(<App repository={nextRepository} />);
 
     await act(async () => {
-      pendingCreate.resolve(createdPost);
+      pendingCreate.resolve(createResult(createdPost));
       await pendingCreate.promise;
     });
     await act(async () => {
@@ -1107,7 +1189,7 @@ describe("SocialFlow", () => {
 
   it("reconcilia criação e nova listagem por id sem perder dados", async () => {
     const user = userEvent.setup();
-    const pendingCreate = deferred<Post>();
+    const pendingCreate = deferred<CreatePostResponse>();
     const pendingNextList = deferred<Post[]>();
     const oldOnlyPost: Post = {
       ...initialPosts[0],
@@ -1142,9 +1224,7 @@ describe("SocialFlow", () => {
       "Criação concorrente com uma nova listagem.",
     );
 
-    const submitButton = screen.getByRole("button", {
-      name: "Agendar publicação",
-    });
+    const submitButton = (await scheduledSubmitButton());
     await waitFor(() => expect(submitButton).toBeEnabled());
     await user.click(submitButton);
 
@@ -1154,7 +1234,7 @@ describe("SocialFlow", () => {
     expect(nextList).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      pendingCreate.resolve(createdPost);
+      pendingCreate.resolve(createResult(createdPost));
       await pendingCreate.promise;
     });
     await act(async () => {
@@ -1217,9 +1297,7 @@ describe("SocialFlow", () => {
       "Envio deve permanecer bloqueado durante a nova geração.",
     );
 
-    const submitButton = screen.getByRole("button", {
-      name: "Agendar publicação",
-    });
+    const submitButton = (await scheduledSubmitButton());
     const form = submitButton.closest("form");
     expect(form).not.toBeNull();
     expect(submitButton).toBeEnabled();
@@ -1277,7 +1355,7 @@ describe("SocialFlow", () => {
 
   it("ignora dois submits rápidos enquanto a criação está pendente", async () => {
     const user = userEvent.setup();
-    const pendingCreate = deferred<Post>();
+    const pendingCreate = deferred<CreatePostResponse>();
     const create = vi
       .fn<PostsRepository["create"]>()
       .mockImplementation(() => pendingCreate.promise);
@@ -1296,9 +1374,7 @@ describe("SocialFlow", () => {
       "Envio protegido contra duplicação.",
     );
 
-    const submitButton = screen.getByRole("button", {
-      name: "Agendar publicação",
-    });
+    const submitButton = (await scheduledSubmitButton());
     const form = submitButton.closest("form");
 
     await waitFor(() => expect(submitButton).toBeEnabled());
@@ -1312,7 +1388,7 @@ describe("SocialFlow", () => {
     expect(submitButton).toHaveAttribute("aria-busy", "true");
 
     await act(async () => {
-      pendingCreate.resolve(createdPost);
+      pendingCreate.resolve(createResult(createdPost));
       await pendingCreate.promise;
     });
 
@@ -1330,7 +1406,7 @@ describe("SocialFlow", () => {
 
   it("preserva edições feitas enquanto uma criação está pendente", async () => {
     const user = userEvent.setup();
-    const pendingCreate = deferred<Post>();
+    const pendingCreate = deferred<CreatePostResponse>();
     const create = vi.fn(() => pendingCreate.promise);
     const repository: PostsRepository = {
       create,
@@ -1344,7 +1420,8 @@ describe("SocialFlow", () => {
       caption: originalCaption,
       mediaAssetIds: [],
       scheduledFor: new Date(2026, 7, 14, 11, 15).toISOString(),
-      status: "scheduled",
+      publicationMode: "scheduled",
+      socialAccountIds: [pageId],
       title: "Versão original do Composer",
     };
 
@@ -1355,11 +1432,9 @@ describe("SocialFlow", () => {
     );
 
     const captionInput = screen.getByRole("textbox", { name: /^Legenda/ });
-    const dateInput = screen.getByLabelText("Data");
+    const dateInput = (await scheduledDateInput());
     const timeInput = screen.getByLabelText("Horário");
-    const submitButton = screen.getByRole("button", {
-      name: "Agendar publicação",
-    });
+    const submitButton = (await scheduledSubmitButton());
     const form = submitButton.closest("form");
 
     fireEvent.change(captionInput, { target: { value: originalCaption } });
@@ -1381,7 +1456,7 @@ describe("SocialFlow", () => {
     expect(create).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      pendingCreate.resolve(createdPost);
+      pendingCreate.resolve(createResult(createdPost));
       await pendingCreate.promise;
     });
 
@@ -1398,7 +1473,7 @@ describe("SocialFlow", () => {
 
   it("mantém uma nova sessão do Composer após uma submissão antiga resolver", async () => {
     const user = userEvent.setup();
-    const pendingCreate = deferred<Post>();
+    const pendingCreate = deferred<CreatePostResponse>();
     const create = vi
       .fn<PostsRepository["create"]>()
       .mockImplementation(() => pendingCreate.promise);
@@ -1414,9 +1489,7 @@ describe("SocialFlow", () => {
       screen.getByRole("button", { name: /Criar publicação/i }),
     );
     const firstCaption = screen.getByRole("textbox", { name: /^Legenda/ });
-    const firstSubmit = screen.getByRole("button", {
-      name: "Agendar publicação",
-    });
+    const firstSubmit = (await scheduledSubmitButton());
 
     await user.type(firstCaption, "Publicação enviada pela sessão antiga.");
     await waitFor(() => expect(firstSubmit).toBeEnabled());
@@ -1433,7 +1506,7 @@ describe("SocialFlow", () => {
     await user.type(newCaption, newDraft);
 
     await act(async () => {
-      pendingCreate.resolve(createdPost);
+      pendingCreate.resolve(createResult(createdPost));
       await pendingCreate.promise;
     });
 
@@ -1581,7 +1654,7 @@ describe("SocialFlow", () => {
   });
 
   it("envia ao PostsRepository somente o ID da mídia selecionada no Composer", async () => {
-    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createdPost) };
+    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createResult(createdPost)) };
     const source = mediaRepository({ list: vi.fn().mockResolvedValue([composerMediaAsset]) });
     render(<App repository={postsRepository} mediaAssetsRepository={source} />);
     await screen.findByText("Nenhuma publicação agendada");
@@ -1589,8 +1662,8 @@ describe("SocialFlow", () => {
     const card = await screen.findByRole("button", { name: /Selecionar foto-do-workspace.jpg/i });
     fireEvent.click(card);
     fireEvent.change(screen.getByRole("textbox", { name: /^Legenda/ }), { target: { value: "Post com foto" } });
-    fireEvent.change(screen.getByLabelText("Data"), { target: { value: "2027-09-25" } });
-    fireEvent.submit(screen.getByRole("button", { name: "Agendar publicação" }).closest("form")!);
+    fireEvent.change((await scheduledDateInput()), { target: { value: "2027-09-25" } });
+    fireEvent.submit((await scheduledSubmitButton()).closest("form")!);
     await waitFor(() => expect(postsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ mediaAssetIds: [composerMediaAsset.id] })));
   });
 
@@ -1617,8 +1690,12 @@ describe("SocialFlow", () => {
     const createObjectURL = vi.fn().mockReturnValue("blob:workspace-a");
     const revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", Object.assign(class extends URL {}, { createObjectURL, revokeObjectURL }));
-    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue({ ...createdPost, tenantId: tenantB.id, mediaAssetIds: [] }) };
-    render(<App authRepository={authRepository} initialAuthSession={demoAuthSession} repository={postsRepository} mediaAssetsRepository={source} />);
+    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createResult({ ...createdPost, tenantId: tenantB.id, mediaAssetIds: [] })) };
+    const accounts = new MockSocialAccountsRepository();
+    vi.spyOn(accounts, "list").mockImplementation(async (workspaceId) => workspaceId === tenantB.id
+      ? [{ ...initialSocialAccounts[1], id: uuid(811) }]
+      : initialSocialAccounts);
+    render(<App authRepository={authRepository} initialAuthSession={demoAuthSession} repository={postsRepository} mediaAssetsRepository={source} socialAccountsRepository={accounts} />);
     await screen.findByText("Nenhuma publicação agendada");
     fireEvent.click(screen.getByRole("button", { name: /Criar publicação/i }));
     await waitFor(() => expect(source.list).toHaveBeenCalledTimes(1));
@@ -1630,24 +1707,24 @@ describe("SocialFlow", () => {
     await waitFor(() => expect(source.list).toHaveBeenCalledTimes(2));
     await act(async () => { listA.resolve([composerMediaAsset]); uploadA.resolve(composerMediaAsset); await Promise.all([listA.promise, uploadA.promise]); });
     expect(screen.queryByText("foto-do-workspace.jpg")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Agendar publicação" })).toBeEnabled();
     fireEvent.change(screen.getByRole("textbox", { name: /^Legenda/ }), { target: { value: "Post no B" } });
-    fireEvent.change(screen.getByLabelText("Data"), { target: { value: "2027-09-25" } });
-    fireEvent.submit(screen.getByRole("button", { name: "Agendar publicação" }).closest("form")!);
+    fireEvent.change((await scheduledDateInput()), { target: { value: "2027-09-25" } });
+    expect((await scheduledSubmitButton())).toBeEnabled();
+    fireEvent.submit((await scheduledSubmitButton()).closest("form")!);
     await waitFor(() => expect(postsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ mediaAssetIds: [] })));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:workspace-a");
   });
 
   it("permite criar Post sem mídia após falha da biblioteca", async () => {
-    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createdPost) };
+    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createResult(createdPost)) };
     const source = mediaRepository({ list: vi.fn().mockRejectedValue(new Error("offline")) });
     render(<App repository={postsRepository} mediaAssetsRepository={source} />);
     await screen.findByText("Nenhuma publicação agendada");
     fireEvent.click(screen.getByRole("button", { name: /Criar publicação/i }));
     expect(await screen.findByText("Não foi possível carregar sua biblioteca de mídia.")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: /^Legenda/ }), { target: { value: "Post sem mídia" } });
-    fireEvent.change(screen.getByLabelText("Data"), { target: { value: "2027-09-25" } });
-    fireEvent.submit(screen.getByRole("button", { name: "Agendar publicação" }).closest("form")!);
+    fireEvent.change((await scheduledDateInput()), { target: { value: "2027-09-25" } });
+    fireEvent.submit((await scheduledSubmitButton()).closest("form")!);
     await waitFor(() => expect(postsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ mediaAssetIds: [] })));
   });
 });

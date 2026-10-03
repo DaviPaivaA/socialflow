@@ -7,12 +7,14 @@ import type { CreatePostInput } from "./PostsRepository";
 const TENANT_ID = "11111111-1111-4111-8111-111111111111";
 const AUTHOR_ID = "22222222-2222-4222-8222-222222222222";
 const MEDIA_ID = "44444444-4444-4444-8444-444444444444";
+const PAGE_ID = "55555555-5555-4555-8555-555555555555";
 
 const newPost: CreatePostInput = {
   title: "Nova publicação",
   caption: "Conteúdo enviado à API.",
   scheduledFor: "2026-08-14T11:00:00-03:00",
-  status: "scheduled",
+  publicationMode: "scheduled",
+  socialAccountIds: [PAGE_ID],
 };
 
 const existingPost: Post = {
@@ -23,12 +25,28 @@ const existingPost: Post = {
   mediaAssetIds: [],
   publishedAt: null,
   ragRunId: null,
-  scheduledFor: newPost.scheduledFor,
-  status: newPost.status,
+  scheduledFor: "2026-08-14T11:00:00-03:00",
+  status: "scheduled",
   tenantId: TENANT_ID,
   title: newPost.title ?? null,
   updatedAt: "2026-08-10T12:00:00.000Z",
 };
+const publication = {
+  createdAt: existingPost.createdAt,
+  errorCode: null,
+  errorMessage: null,
+  failedAt: null,
+  id: "66666666-6666-4666-8666-666666666666",
+  postId: existingPost.id,
+  providerPostId: null,
+  publishedAt: null,
+  socialAccountId: PAGE_ID,
+  startedAt: null,
+  status: "scheduled",
+  tenantId: TENANT_ID,
+  updatedAt: existingPost.updatedAt,
+};
+const createdResponse = { post: existingPost, publications: [publication] };
 
 function createRepository(fetchImpl: typeof fetch) {
   return new HttpPostsRepository(
@@ -58,10 +76,10 @@ describe("HttpPostsRepository", () => {
   it("envia somente o DTO de criação e preserva o instante completo", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValue(jsonResponse(existingPost, 201));
+      .mockResolvedValue(jsonResponse(createdResponse, 201));
     const repository = createRepository(fetchMock);
 
-    await expect(repository.create(newPost)).resolves.toEqual(existingPost);
+    await expect(repository.create(newPost)).resolves.toEqual(createdResponse);
 
     const requestBody = JSON.parse(
       String(fetchMock.mock.calls[0]?.[1]?.body),
@@ -72,16 +90,47 @@ describe("HttpPostsRepository", () => {
     expect(requestBody).not.toHaveProperty("authorUserId");
     expect(requestBody).not.toHaveProperty("channels");
     expect(requestBody).not.toHaveProperty("color");
+    expect(requestBody).not.toHaveProperty("status");
   });
 
   it("envia mediaAssetIds quando a criação referencia mídia", async () => {
     const createdPost = { ...existingPost, mediaAssetIds: [MEDIA_ID] };
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(createdPost, 201));
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ post: createdPost, publications: [publication] }, 201));
     const repository = createRepository(fetchMock);
 
-    await expect(repository.create({ ...newPost, mediaAssetIds: [MEDIA_ID] })).resolves.toEqual(createdPost);
+    await expect(repository.create({ ...newPost, mediaAssetIds: [MEDIA_ID] })).resolves.toEqual({ post: createdPost, publications: [publication] });
     const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
     expect(requestBody.mediaAssetIds).toEqual([MEDIA_ID]);
+  });
+
+  it("envia somente campos permitidos, inclusive com propriedades extras em tempo de execução", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(createdResponse, 201));
+    const repository = createRepository(fetchMock);
+    const contaminated = { ...newPost, status: "published", tenantId: TENANT_ID, authorUserId: AUTHOR_ID, accessToken: "secret", color: "blue" };
+
+    await repository.create(contaminated);
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(newPost);
+  });
+
+  it("omite scheduledFor para publicação imediata", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(createdResponse, 201));
+    const repository = createRepository(fetchMock);
+
+    await repository.create({ ...newPost, publicationMode: "now", scheduledFor: newPost.scheduledFor });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(body).toEqual({ caption: newPost.caption, publicationMode: "now", socialAccountIds: [PAGE_ID], title: newPost.title });
+  });
+
+  it.each([
+    ["post antigo", existingPost],
+    ["sem destinos", { post: existingPost }],
+    ["destino inválido", { post: existingPost, publications: [{ ...publication, socialAccountId: "bad" }] }],
+    ["segredo em destino", { post: existingPost, publications: [{ ...publication, accessToken: "secret" }] }],
+  ])("rejeita criação com resposta %s", async (_label, body) => {
+    const repository = createRepository(vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body, 201)));
+    await expect(repository.create(newPost)).rejects.toThrow("A resposta recebida é inválida.");
   });
 
   it("aceita um array vazio em uma resposta 200", async () => {

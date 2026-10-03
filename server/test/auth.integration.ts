@@ -618,10 +618,31 @@ describe("autenticação HTTP com PostgreSQL", () => {
       account.session.user.id,
       "Workspace B",
     );
+    async function pageFor(tenantId: string) {
+      const connectionId = (await pool.query<{ id: string }>(
+        `INSERT INTO oauth_connections (tenant_id, platform, external_user_id, access_token_encrypted, scopes)
+         VALUES ($1, 'meta', $2, $3, ARRAY['pages_show_list', 'pages_read_engagement', 'pages_manage_posts']) RETURNING id`,
+        [tenantId, `user-${randomUUID()}`, Buffer.from("encrypted-user-token")],
+      )).rows[0]!.id;
+      const pageId = (await pool.query<{ id: string }>(
+        `INSERT INTO social_accounts (tenant_id, oauth_connection_id, account_type, external_account_id, metadata)
+         VALUES ($1, $2, 'facebook_page', $3, '{"tasks":["CREATE_CONTENT"]}'::jsonb) RETURNING id`,
+        [tenantId, connectionId, `page-${randomUUID()}`],
+      )).rows[0]!.id;
+      await pool.query(
+        `INSERT INTO social_account_credentials (tenant_id, social_account_id, access_token_encrypted) VALUES ($1, $2, $3)`,
+        [tenantId, pageId, Buffer.from("encrypted-page-token")],
+      );
+      return pageId;
+    }
+    const pageA = await pageFor(account.session.tenant.id);
+    const pageB = await pageFor(workspaceB.tenantId);
+    const pageC = await pageFor(otherAccount.session.tenant.id);
     const postInput = {
       caption: "Conteúdo isolado por workspace.",
+      publicationMode: "scheduled",
       scheduledFor: "2027-08-13T13:30:00.000Z",
-      status: "scheduled",
+      socialAccountIds: [pageA],
       title: "Post do workspace A",
     };
 
@@ -635,7 +656,7 @@ describe("autenticação HTTP com PostgreSQL", () => {
     });
     expect(postAResponse.status).toBe(201);
     const postCResponse = await apiFetch(`${baseUrl}/posts`, {
-      body: JSON.stringify({ ...postInput, title: "Post do workspace C" }),
+      body: JSON.stringify({ ...postInput, socialAccountIds: [pageC], title: "Post do workspace C" }),
       headers: {
         "Content-Type": "application/json",
         Cookie: otherAccount.cookie,
@@ -698,6 +719,7 @@ describe("autenticação HTTP com PostgreSQL", () => {
       body: JSON.stringify({
         ...postInput,
         authorUserId: otherAccount.session.user.id,
+        socialAccountIds: [pageB],
         tenantId: otherAccount.session.tenant.id,
         title: "Post do workspace B",
       }),
@@ -710,9 +732,11 @@ describe("autenticação HTTP com PostgreSQL", () => {
     expect(createB.status).toBe(201);
     await expect(jsonBody(createB)).resolves.toEqual(
       expect.objectContaining({
-        authorUserId: account.session.user.id,
-        tenantId: workspaceB.tenantId,
-        title: "Post do workspace B",
+        post: expect.objectContaining({
+          authorUserId: account.session.user.id,
+          tenantId: workspaceB.tenantId,
+          title: "Post do workspace B",
+        }),
       }),
     );
 

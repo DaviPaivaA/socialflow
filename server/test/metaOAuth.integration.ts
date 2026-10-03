@@ -68,6 +68,7 @@ class ControlledMetaClient implements MetaOAuthProviderClient {
     { name: "pages_show_list", status: "granted" },
     { name: "pages_read_engagement", status: "granted" },
     { name: "instagram_basic", status: "granted" },
+    { name: "pages_manage_posts", status: "granted" },
   ];
   listPagesBarrier: MetaListPagesBarrier | null = null;
   shortToken = "meta-short-token";
@@ -80,7 +81,7 @@ class ControlledMetaClient implements MetaOAuthProviderClient {
     url.searchParams.set("redirect_uri", META_CONFIG.redirectUri!);
     url.searchParams.set(
       "scope",
-      "pages_show_list,pages_read_engagement,instagram_basic",
+      "pages_show_list,pages_read_engagement,instagram_basic,pages_manage_posts",
     );
     url.searchParams.set("state", state);
     return url.toString();
@@ -128,6 +129,7 @@ class ControlledMetaClient implements MetaOAuthProviderClient {
       { name: "pages_show_list", status: "granted" },
       { name: "pages_read_engagement", status: "granted" },
       { name: "instagram_basic", status: "granted" },
+      { name: "pages_manage_posts", status: "granted" },
     ];
     this.listPagesBarrier = null;
     this.shortToken = "meta-short-token";
@@ -594,6 +596,7 @@ describe("OAuth Meta HTTP com PostgreSQL", () => {
       "pages_show_list",
       "pages_read_engagement",
       "instagram_basic",
+      "pages_manage_posts",
     ]);
     const encryptedUserToken = connection.rows[0]!.access_token_encrypted.toString(
       "utf8",

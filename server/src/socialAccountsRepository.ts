@@ -8,6 +8,14 @@ import type { PostsContext } from "./postsContext.ts";
 
 export type SocialAccountsContext = PostsContext;
 
+export type FacebookPublishingCredential = {
+  accessTokenEncrypted: string | null;
+  providerAccountId: string;
+  scopes: string[];
+  tasks: string[];
+  tokenExpiresAt: string | null;
+};
+
 export type MetaAuthorizationContext = SocialAccountsContext & {
   membershipId: string;
   sessionId: string;
@@ -76,6 +84,10 @@ export interface SocialAccountsRepository {
     context: SocialAccountsContext,
     id: string,
   ): Promise<SocialAccount | null>;
+  findFacebookPublishingCredential(
+    context: SocialAccountsContext,
+    id: string,
+  ): Promise<FacebookPublishingCredential | null>;
   list(context: SocialAccountsContext): Promise<SocialAccount[]>;
   register(
     context: SocialAccountsContext,

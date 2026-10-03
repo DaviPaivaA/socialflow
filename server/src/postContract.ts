@@ -6,8 +6,9 @@ export type { Post, PostStatus } from "../../shared/postContract.ts";
 export type CreatePostInput = {
   caption: string;
   mediaAssetIds: string[];
-  scheduledFor: string;
-  status: "scheduled";
+  publicationMode: "now" | "scheduled";
+  scheduledFor: string | null;
+  socialAccountIds: string[];
   title?: string;
 };
 
@@ -41,10 +42,26 @@ export function validateCreatePost(value: unknown): PostValidationResult {
   if (typeof value.caption !== "string" || value.caption.trim().length === 0) {
     invalidFields.push("caption");
   }
-  if (!isValidScheduledFor(value.scheduledFor)) {
+  if (value.publicationMode !== "now" && value.publicationMode !== "scheduled") {
+    invalidFields.push("publicationMode");
+  }
+  if (
+    (value.publicationMode === "scheduled" && !isValidScheduledFor(value.scheduledFor)) ||
+    (value.publicationMode === "now" && value.scheduledFor !== undefined) ||
+    (value.publicationMode !== "now" && value.publicationMode !== "scheduled" &&
+      value.scheduledFor !== undefined && !isValidScheduledFor(value.scheduledFor))
+  ) {
     invalidFields.push("scheduledFor");
   }
-  if (value.status !== "scheduled") invalidFields.push("status");
+  if (Object.hasOwn(value, "status")) invalidFields.push("status");
+  if (
+    !Array.isArray(value.socialAccountIds) ||
+    value.socialAccountIds.length === 0 ||
+    !value.socialAccountIds.every(isUuid) ||
+    new Set(value.socialAccountIds).size !== value.socialAccountIds.length
+  ) {
+    invalidFields.push("socialAccountIds");
+  }
   const mediaAssetIds = value.mediaAssetIds === undefined ? [] : value.mediaAssetIds;
   if (
     !Array.isArray(mediaAssetIds) ||
@@ -64,8 +81,9 @@ export function validateCreatePost(value: unknown): PostValidationResult {
     data: {
       caption: value.caption as string,
       mediaAssetIds: [...(mediaAssetIds as string[])],
-      scheduledFor: value.scheduledFor as string,
-      status: "scheduled",
+      publicationMode: value.publicationMode as "now" | "scheduled",
+      scheduledFor: value.publicationMode === "now" ? null : value.scheduledFor as string,
+      socialAccountIds: [...(value.socialAccountIds as string[])],
       ...(typeof value.title === "string" ? { title: value.title } : {}),
     },
   };

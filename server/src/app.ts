@@ -15,8 +15,10 @@ import {
 import { validateCreatePost } from "./postContract.ts";
 import { AuthenticatedPostsContextResolver } from "./postsContext.ts";
 import {
+  InvalidPostDestinationError,
   InvalidPostsContextError,
   PostMediaAssetNotFoundError,
+  PostMediaAssetUnsupportedError,
   PostgresPostsStore,
 } from "./postsStore.ts";
 import {
@@ -56,6 +58,11 @@ import { PostgresMediaAssetsRepository } from "./mediaAssetsRepository.ts";
 import { MediaContentUnavailableError, MediaRequestError } from "./mediaErrors.ts";
 import { sendMediaContent } from "./mediaContent.ts";
 import type { MediaLimits } from "./mediaStorage.ts";
+import { FacebookPublishingService } from "./facebookPublishingService.ts";
+import { HttpMetaPublishingClient, MetaPublishingClientError, type MetaPublishingProviderClient } from "./metaPublishingClient.ts";
+import { PostgresPostPublicationsRepository } from "./postPublicationsRepository.ts";
+import { PublicationCoordinator } from "./publicationCoordinator.ts";
+import { PublicationScheduler, type PublicationSchedulerOptions } from "./publicationScheduler.ts";
 
 const MAX_BODY_SIZE = 1_048_576;
 
@@ -69,6 +76,8 @@ type ApiServerOptions = {
   logger?: ApiLogger;
   metaOAuth?: MetaOAuthConfig;
   metaOAuthClient?: MetaOAuthProviderClient;
+  metaPublishingClient?: MetaPublishingProviderClient;
+  publicationSchedulerOptions?: Omit<PublicationSchedulerOptions, "coordinator" | "logger">;
   mediaLimits?: MediaLimits;
   mediaStoragePath?: string;
   pool: Pool;
@@ -256,6 +265,8 @@ export function createApiServer({
   logger = console,
   metaOAuth = DISABLED_META_OAUTH_CONFIG,
   metaOAuthClient,
+  metaPublishingClient,
+  publicationSchedulerOptions,
   mediaLimits = { imageBytes: 25 * 1024 * 1024, videoBytes: 250 * 1024 * 1024 },
   mediaStoragePath = "data/media",
   pool,
@@ -291,7 +302,29 @@ export function createApiServer({
     socialTokenCipher,
   );
 
-  return createServer(async (request, response) => {
+  const publicationRepository = new PostgresPostPublicationsRepository(pool);
+  let publishingProvider = metaPublishingClient;
+  if (!publishingProvider && metaOAuth.enabled) {
+    requireEnabledMetaOAuthConfig(metaOAuth);
+    publishingProvider = new HttpMetaPublishingClient(metaOAuth);
+  }
+  // When Meta is disabled, eligible destinations still settle without a network call.
+  publishingProvider ??= {
+    publishText: async () => { throw new MetaPublishingClientError("meta_provider_error", "publish_text"); },
+    publishPhoto: async () => { throw new MetaPublishingClientError("meta_provider_error", "publish_photo"); },
+  };
+  const publishingService = new FacebookPublishingService(
+    publicationRepository, socialAccountsRepository, socialTokenCipher,
+    mediaAssetsService, publishingProvider,
+  );
+  const publicationCoordinator = new PublicationCoordinator(publicationRepository, publishingService);
+  const publicationScheduler = new PublicationScheduler({
+    coordinator: publicationCoordinator,
+    logger,
+    ...publicationSchedulerOptions,
+  });
+
+  const server = createServer(async (request, response) => {
     writeCorsHeaders(request, response, corsOrigin);
 
     try {
@@ -538,11 +571,11 @@ export function createApiServer({
           );
         }
 
-        sendJson(
-          response,
-          201,
-          await postsStore.create(context, validation.data),
-        );
+        const created = await postsStore.create(context, validation.data);
+        const result = validation.data.publicationMode === "now"
+          ? await publicationCoordinator.publishPostNow(context.tenantId, created.post.id)
+          : created;
+        sendJson(response, 201, result);
         return;
       }
 
@@ -726,6 +759,20 @@ export function createApiServer({
         return;
       }
 
+      if (error instanceof InvalidPostDestinationError) {
+        sendJson(response, 400, {
+          error: { code: "invalid_post_destination", message: error.message },
+        });
+        return;
+      }
+
+      if (error instanceof PostMediaAssetUnsupportedError) {
+        sendJson(response, 400, {
+          error: { code: "unsupported_post_media", message: error.message },
+        });
+        return;
+      }
+
       if (error instanceof InvalidSocialAccountsContextError) {
         sendJson(response, 403, {
           error: {
@@ -812,4 +859,6 @@ export function createApiServer({
       });
     }
   });
+  server.once("close", () => publicationScheduler.stop());
+  return Object.assign(server, { publicationCoordinator, publicationScheduler });
 }
