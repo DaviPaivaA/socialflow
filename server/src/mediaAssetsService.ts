@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { open, realpath } from "node:fs/promises";
+import { open, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { IncomingMessage } from "node:http";
 import type { MediaAsset } from "../../shared/mediaContract.ts";
-import { resolveMediaContentFile } from "./mediaContent.ts";
+import { resolveMediaContentFile, type VerifiedMediaHandle } from "./mediaContent.ts";
 import { MediaContentUnavailableError, MediaRequestError, MediaStorageError } from "./mediaErrors.ts";
 import type { MediaAssetsRepository, StoredMediaAsset } from "./mediaAssetsRepository.ts";
 import {
@@ -13,6 +14,7 @@ import {
   type MediaLimits,
 } from "./mediaStorage.ts";
 import type { PostsContext } from "./postsContext.ts";
+import { waitForDatabaseQuery } from "./cancellableDatabaseWait.ts";
 
 export class MediaAssetsService {
   private readonly repository: MediaAssetsRepository;
@@ -91,6 +93,51 @@ export class MediaAssetsService {
     } catch {
       throw new MediaContentUnavailableError();
     }
+  }
+
+  async openPublishingFile(context: PostsContext, id: string, signal?: AbortSignal): Promise<VerifiedMediaHandle> {
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      signal?.throwIfAborted();
+      const asset = await waitForDatabaseQuery(this.repository.findStoredById(context, id), signal);
+      signal?.throwIfAborted();
+      if (!asset) throw new MediaRequestError(404, "media_asset_not_found", "A mídia não foi encontrada.");
+      const formats: Record<string, string> = { jpg: "image/jpeg", png: "image/png", mp4: "video/mp4", mov: "video/quicktime" };
+      const extension = asset.storageKey.slice(asset.storageKey.lastIndexOf(".") + 1);
+      // Persisted images use publication bounds, not the current upload/video ceiling.
+      const maximum = asset.mimeType.startsWith("video/")
+        ? Math.min(this.limits.videoBytes, 262144000) : 8000000;
+      if (formats[extension] !== asset.mimeType || !Number.isSafeInteger(asset.sizeBytes) || asset.sizeBytes <= 0 ||
+        asset.sizeBytes > maximum) throw new MediaContentUnavailableError();
+      const file = await this.resolveContent(context, asset);
+      const before = await stat(file.path);
+      signal?.throwIfAborted();
+      handle = await open(file.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.size !== asset.sizeBytes || before.dev !== opened.dev || before.ino !== opened.ino) throw new MediaContentUnavailableError();
+      // Re-resolve containment and identity after opening, then use only this descriptor.
+      const resolved = await this.resolveContent(context, asset);
+      const current = await stat(resolved.path);
+      if (current.dev !== opened.dev || current.ino !== opened.ino) throw new MediaContentUnavailableError();
+      const hash = createHash("sha256"); const chunk = Buffer.alloc(64 * 1024);
+      let offset = 0;
+      while (offset < asset.sizeBytes) {
+        signal?.throwIfAborted();
+        const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, asset.sizeBytes - offset), offset);
+        if (!bytesRead) throw new MediaContentUnavailableError();
+        hash.update(chunk.subarray(0, bytesRead)); offset += bytesRead;
+      }
+      signal?.throwIfAborted();
+      const after = await handle.stat();
+      if (after.size !== asset.sizeBytes || after.ino !== opened.ino || after.dev !== opened.dev ||
+        after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs || hash.digest("hex") !== asset.sha256) throw new MediaContentUnavailableError();
+      const verified = handle;
+      handle = undefined;
+      return { handle: verified, mimeType: asset.mimeType, sizeBytes: asset.sizeBytes, close: () => verified.close() };
+    } catch (error) {
+      if (error instanceof MediaRequestError) throw error;
+      throw new MediaContentUnavailableError();
+    } finally { await handle?.close(); }
   }
 
   async upload(request: IncomingMessage, context: PostsContext): Promise<MediaAsset> {

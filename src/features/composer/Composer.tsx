@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import type { CreatePostInput } from "../../data/posts/PostsRepository";
 import type { MediaAssetsRepository } from "../../data/media/MediaAssetsRepository";
 import type { SocialAccountsRepository } from "../../data/socialAccounts/SocialAccountsRepository";
+import { validatePublicationCompatibility } from "../../../shared/publicationPolicy";
 import { localScheduleToIso } from "../../domain/scheduling";
 import { ComposerDestinations } from "./ComposerDestinations";
 import { ComposerMediaPicker } from "./ComposerMediaPicker";
@@ -73,16 +74,33 @@ export function Composer({
   };
 
   const scheduledFor = publicationMode === "scheduled" ? localScheduleToIso(date, time) : null;
-  const hasPages = !destinations.isLoading && !destinations.error && destinations.facebookPages.length > 0;
+  const hasAccounts = !destinations.isLoading && !destinations.error && destinations.accounts.length > 0;
   const selectedMedia = media.selectedMediaAsset;
-  const mediaError = selectedMedia?.mediaType === "video"
-    ? "Vídeo ainda não é compatível com publicação no Facebook. Use uma foto JPEG ou PNG, ou remova a mídia."
-    : selectedMedia && !["image/jpeg", "image/png"].includes(selectedMedia.mimeType)
-      ? "Este formato de imagem não é compatível com publicação no Facebook. Use uma foto JPEG ou PNG."
-      : selectedMedia && selectedMedia.sizeBytes > 4_000_000
-        ? "Esta imagem excede 4 MB. Use uma foto JPEG ou PNG de até 4 MB."
-        : null;
-  const cannotSubmit = !hasPages || destinations.selectedIds.length === 0 || !caption.trim()
+  const selectedProviders = destinations.accounts
+    .filter((account) => destinations.selectedIds.includes(account.id))
+    .flatMap(({ provider }) => provider === "facebook" || provider === "instagram" ? [provider] : []);
+  const hasFacebook = selectedProviders.includes("facebook");
+  const hasInstagram = selectedProviders.includes("instagram");
+  const compatibility = selectedProviders.length > 0
+    ? validatePublicationCompatibility({
+      providers: selectedProviders, media: selectedMedia, caption: caption.trim(),
+      // Conservative public ceiling; the server remains authoritative for configured limits.
+      maxVideoBytes: 262_144_000,
+    })
+    : { valid: true as const };
+  const mediaError = compatibility.valid ? null : {
+    media_required: "Instagram exige mídia. Escolha uma foto JPEG ou um vídeo MP4/MOV, ou remova o destino Instagram.",
+    unsupported_media_type: hasInstagram
+      ? "Instagram aceita foto JPEG ou vídeo MP4/MOV. PNG e WebP não são compatíveis com esse destino."
+      : "Facebook aceita foto JPEG ou PNG, ou vídeo MP4/MOV. Este formato não é compatível.",
+    media_too_large: selectedMedia?.mediaType === "video"
+      ? "Este vídeo excede 250 MiB (262.144.000 bytes). O servidor pode aplicar um limite menor."
+      : hasFacebook
+        ? "Esta imagem excede 4 MB. Use uma foto JPEG ou PNG de até 4 MB para Facebook."
+        : "Esta imagem excede 8 MB. Use uma foto JPEG de até 8 MB para Instagram.",
+    caption_too_long: "A legenda excede o limite de 2.200 caracteres do Instagram.",
+  }[compatibility.code];
+  const cannotSubmit = !hasAccounts || destinations.selectedIds.length === 0 || !caption.trim()
     || (publicationMode === "scheduled" && scheduledFor === null)
     || mediaError !== null || media.isUploadingMedia || isLoadingPosts || isSubmitting;
 
@@ -114,7 +132,7 @@ export function Composer({
           <div className="composer-fields">
             <label className="field-label">Legenda<textarea value={caption} onChange={(event) => changeCaption(event.target.value)} placeholder="Conte a história por trás desta publicação..." maxLength={500} required /><small>{caption.length}/500</small></label>
             <ComposerDestinations destinations={destinations} onToggle={toggleDestination} />
-            <fieldset className="composer-mode" disabled={!hasPages}>
+            <fieldset className="composer-mode" disabled={!hasAccounts}>
               <legend>Publicação</legend>
               <label><input checked={publicationMode === "now"} onChange={() => changeMode("now")} name="publicationMode" type="radio" />Publicar agora</label>
               <label><input checked={publicationMode === "scheduled"} onChange={() => changeMode("scheduled")} name="publicationMode" type="radio" />Agendar</label>
@@ -126,6 +144,10 @@ export function Composer({
             <div className="best-time"><span>✦</span><div><strong>Agendamento</strong><p>Escolha a data e o horário da publicação.</p></div></div></> : null}
             <ComposerMediaPicker media={media} repository={mediaAssetsRepository} />
             {mediaError ? <p className="composer-format-error" role="alert">{mediaError}</p> : null}
+            {selectedMedia?.mediaType === "video" && selectedProviders.length > 0 ? <p role="status">
+              O vídeo usa o formato Reel.{hasFacebook ? " Na Facebook Page, a audiência é pública." : ""}
+              {" Orientação: H264/AAC, 9:16, 3–90 segundos e 24–60 FPS. O SocialFlow não verifica localmente codec, duração, FPS ou proporção; a aceitação do arquivo depende da Meta."}
+            </p> : null}
           </div>
           <div className="composer-preview">
             <span>PRÉ-VISUALIZAÇÃO</span>

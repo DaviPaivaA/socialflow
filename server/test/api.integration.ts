@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -18,11 +17,14 @@ import { MetaPublishingClientError, type MetaPublishingProviderClient } from "..
 import { runMigrations } from "../src/migrations.ts";
 import { SocialTokenCipher } from "../src/socialTokenCrypto.ts";
 import { publicationFixture } from "./publicationFixtures.ts";
+import { asyncPublishingStubs } from "./metaPublishingClientStub.ts";
+import type { CreatePostResponse } from "../../shared/postPublicationContract.ts";
+import { ensureMediaStorageReady } from "../src/mediaStorage.ts";
 
 type RunningApi = {
   baseUrl: string;
   pool: Pool;
-  server: Server;
+  server: ReturnType<typeof createApiServer>;
 };
 
 const INPUT: Omit<CreatePostInput, "socialAccountIds"> = {
@@ -82,6 +84,7 @@ async function startApi(
   databaseUrl: string,
   schema: string,
   metaPublishingClient?: MetaPublishingProviderClient,
+  options: Partial<Pick<Parameters<typeof createApiServer>[0], "metaMedia" | "mediaLimits" | "mediaStoragePath">> = {},
 ): Promise<RunningApi> {
   const pool = schemaPool(databaseUrl, schema);
   const server = createApiServer({
@@ -97,6 +100,7 @@ async function startApi(
     },
     sessionTtlSeconds: 60 * 60,
     socialTokenCipher: new SocialTokenCipher(Buffer.alloc(32, 7)),
+    ...options,
   });
 
   await new Promise<void>((resolvePromise, rejectPromise) => {
@@ -609,7 +613,7 @@ describe("API com PostgreSQL e schema oficial", () => {
       const migrationResult = await migrationPool.query<{ count: string }>(`
         SELECT count(*)::text AS count FROM schema_migrations
       `);
-      expect(migrationResult.rows[0]?.count).toBe("10");
+      expect(migrationResult.rows[0]?.count).toBe("11");
 
       const apiA = await startApi(databaseUrl, schema);
       runningApis.push(apiA);
@@ -934,7 +938,7 @@ describe("API com PostgreSQL e schema oficial", () => {
     }
   });
 
-  it("responde 400 sem distinguir destino desconhecido de outro tenant e rejeita vídeo publicável", async () => {
+  it("responde 400 sem distinguir destino desconhecido de outro tenant e aceita vídeo agendado", async () => {
     const databaseUrl = requireTestDatabaseUrl();
     const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
     const adminPool = await createSchema(databaseUrl, schema);
@@ -969,8 +973,8 @@ describe("API com PostgreSQL e schema oficial", () => {
         [videoId, accountA.session.tenant.id, accountA.session.user.id, `${accountA.session.tenant.id}/${videoId}.mp4`, "a".repeat(64)],
       );
       const videoResponse = await create(ownPage, [videoId]);
-      expect(videoResponse.status).toBe(400);
-      expect(await videoResponse.json()).toEqual({ error: { code: "unsupported_post_media", message: "A mídia não é compatível com a publicação de Facebook nesta etapa." } });
+      expect(videoResponse.status).toBe(201);
+      expect(await videoResponse.json()).toMatchObject({ post: { mediaAssetIds: [videoId], status: "scheduled" }, publications: [{ socialAccountId: ownPage, status: "scheduled" }] });
     } finally {
       if (api) await stopApi(api);
       await pool.end();
@@ -1008,6 +1012,7 @@ describe("API com PostgreSQL e schema oficial", () => {
         "008_add_media_assets.sql",
         "009_add_post_media.sql",
         "010_add_post_publications.sql",
+        "011_add_publication_operations.sql",
       ]);
     } finally {
       await pool.end();
@@ -1140,7 +1145,7 @@ describe("POST /posts e publicação por Page", () => {
     let api: RunningApi | undefined;
     try {
       await runMigrations(migrationPool);
-      api = await startApi(databaseUrl, schema, { publishText, publishPhoto: vi.fn() });
+      api = await startApi(databaseUrl, schema, { ...asyncPublishingStubs(), publishText, publishPhoto: vi.fn() });
       const account = await registerUser(api.baseUrl, "Publisher", `publisher-${randomUUID()}@example.test`);
       const page = async () => {
         const id = await insertPublishablePage(migrationPool, account.session.tenant.id);
@@ -1230,6 +1235,252 @@ describe("POST /posts e publicação por Page", () => {
   });
 });
 
+describe("POST /posts Meta misto", () => {
+  const capability = { publicOrigin: "https://media.example.test", signingKey: Buffer.alloc(32, 9), ttlSeconds: 3600 };
+
+  async function fixture(enabled = true, videoBytes = 262_144_000) {
+    const databaseUrl = requireTestDatabaseUrl();
+    const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
+    const admin = await createSchema(databaseUrl, schema);
+    const pool = schemaPool(databaseUrl, schema);
+    const root = await mkdtemp(join(tmpdir(), "task8-http-"));
+    await ensureMediaStorageReady(root);
+    const client = { ...asyncPublishingStubs(), publishText: vi.fn(async () => ({ providerPostId: "100_900" })),
+      publishPhoto: vi.fn(async () => ({ providerPostId: "100_901" })) };
+    client.createInstagramContainer.mockResolvedValue({ containerId: "200" });
+    client.getInstagramContainerStatus.mockResolvedValue({ status: "FINISHED" });
+    client.publishInstagramContainer.mockResolvedValue({ providerPostId: "300" });
+    await runMigrations(pool);
+    const api = await startApi(databaseUrl, schema, client, { metaMedia: enabled ? capability : null,
+      mediaStoragePath: root, mediaLimits: { imageBytes: 25_000_000, videoBytes } });
+    const account = await registerUser(api.baseUrl, "Mixed publisher", `mixed-${randomUUID()}@example.test`);
+    const tenantId = account.session.tenant.id;
+    const cipher = new SocialTokenCipher(Buffer.alloc(32, 7));
+    async function destination(instagram: boolean) {
+      const id = await insertPublishablePage(pool, tenantId);
+      await pool.query("UPDATE social_accounts SET external_account_id=$2, account_type=$3, metadata=$4 WHERE id=$1", [id, instagram ? "102" : "101",
+        instagram ? "instagram_business" : "facebook_page", JSON.stringify({ tasks: ["CREATE_CONTENT"], ...(instagram ? { pageId: "101" } : {}) })]);
+      await pool.query("UPDATE oauth_connections SET scopes=$2, access_token_encrypted=$3 WHERE id=(SELECT oauth_connection_id FROM social_accounts WHERE id=$1)",
+        [id, instagram ? ["pages_show_list", "pages_read_engagement", "instagram_basic", "instagram_content_publish"] : ["pages_show_list", "pages_read_engagement", "pages_manage_posts"], Buffer.from(cipher.encryptSecret("private-user-token"))]);
+      await pool.query("UPDATE social_account_credentials SET access_token_encrypted=$2 WHERE social_account_id=$1", [id, Buffer.from(cipher.encryptSecret("private-page-token"))]);
+      return id;
+    }
+    const facebook = await destination(false);
+    const instagram = await destination(true);
+    async function upload(kind: "jpeg" | "png" | "mp4" = "jpeg") {
+      const form = new FormData();
+      const bytes = kind === "jpeg" ? new Uint8Array([255, 216, 255, 224, 1, 2, 3, 4]) : kind === "png"
+        ? new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]) : new Uint8Array([0, 0, 0, 20, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0, 105, 115, 111, 109]);
+      form.append("file", new Blob([bytes], { type: kind === "mp4" ? "video/mp4" : `image/${kind}` }), `asset.${kind === "jpeg" ? "jpg" : kind}`);
+      const response = await apiFetch(`${api.baseUrl}/media-assets`, { method: "POST", headers: { Cookie: account.cookie }, body: form });
+      expect(response.status).toBe(201);
+      return (await response.json() as { id: string }).id;
+    }
+    const create = (ids: string[], mediaIds: string[], now = false, patch: Record<string, unknown> = {}, signal?: AbortSignal) => apiFetch(`${api.baseUrl}/posts`, {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: account.cookie }, signal,
+      body: JSON.stringify({ caption: "Mixed publication", socialAccountIds: ids, mediaAssetIds: mediaIds,
+        publicationMode: now ? "now" : "scheduled", ...(now ? {} : { scheduledFor: "2027-08-13T13:00:00.000Z" }), ...patch }),
+    });
+    async function tick() {
+      // Translate only local scheduling in the isolated schema; DB remains authoritative for leases.
+      await pool.query("UPDATE publication_operations SET next_action_at=clock_timestamp() WHERE tenant_id=$1 AND lease_token IS NULL AND stage NOT IN ('succeeded','failed','unknown')", [tenantId]);
+      await api.server.publicationScheduler.tick();
+      await api.server.publicationScheduler.whenIdle();
+    }
+    async function finish() {
+      for (let index = 0; index < 5; index++) await tick();
+    }
+    return { api, pool, client, account, facebook, instagram, upload, create, tick, finish, async close() {
+      await api.server.publicationCoordinator.whenIdle(); await stopApi(api); await pool.end(); await dropSchema(admin, schema);
+      await rm(root, { recursive: true, force: true });
+    } };
+  }
+
+  it.each([["instagram", "jpeg"], ["instagram", "mp4"], ["mixed", "jpeg"], ["mixed", "mp4"]] as const)("retorna 201 scheduled %s/%s sem chamadas Meta", async (provider, kind) => {
+    const f = await fixture();
+    try {
+      const mediaId = await f.upload(kind);
+      const ids = provider === "mixed" ? [f.facebook, f.instagram] : [f.instagram];
+      const response = await f.create(ids, [mediaId]);
+      expect(response.status).toBe(201);
+      const result = await response.json() as CreatePostResponse;
+      expect(result.post).toMatchObject({ status: "scheduled", mediaAssetIds: [mediaId] });
+      expect(result.publications.map(row => [row.socialAccountId, row.status])).toEqual(ids.map(id => [id, "scheduled"]));
+      for (const method of Object.values(f.client)) expect(method).not.toHaveBeenCalled();
+      expect((await f.pool.query("SELECT count(*)::int AS count FROM publication_operations")).rows[0].count).toBe(0);
+    } finally { await f.close(); }
+  });
+
+  it("responde 503 sem capability e 400/404 seguros para destinos inválidos antes de inserir", async () => {
+    const f = await fixture(false);
+    try {
+      const mediaId = await f.upload();
+      const unavailable = await f.create([f.facebook, f.instagram], [mediaId], true);
+      expect(unavailable.status).toBe(503);
+      expect(await unavailable.json()).toEqual({ error: { code: "instagram_publishing_unavailable", message: "A publicação no Instagram não está disponível neste ambiente." } });
+      const foreign = await registerUser(f.api.baseUrl, "Other", `foreign-${randomUUID()}@example.test`);
+      const foreignId = await insertPublishablePage(f.pool, foreign.session.tenant.id);
+      for (const id of [foreignId, randomUUID()]) {
+        const response = await f.create([id], [mediaId]);
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: { code: "invalid_post_destination", message: "Um ou mais destinos não estão disponíveis para publicação." } });
+      }
+      const deleted = await f.upload();
+      await f.pool.query("UPDATE media_assets SET deleted_at=now() WHERE id=$1", [deleted]);
+      const foreignMedia = await insertMediaAsset(f.pool, { tenantId: foreign.session.tenant.id, uploadedByUserId: foreign.session.user.id });
+      for (const id of [deleted, foreignMedia, randomUUID()]) {
+        const response = await f.create([f.instagram], [id]);
+        expect(response.status).toBe(404);
+        expect(await response.json()).toEqual({ error: { code: "media_asset_not_found", message: "A mídia não foi encontrada." } });
+      }
+      expect((await f.pool.query("SELECT count(*)::int AS count FROM posts")).rows[0].count).toBe(0);
+      for (const method of Object.values(f.client)) expect(method).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+
+  it("aplica limite de vídeo configurado na API e rejeita PNG misto, texto Instagram e duas mídias", async () => {
+    const f = await fixture(true, 19);
+    try {
+      // The isolated DB fixture exceeds the cap; creation must enforce the injected limit too.
+      const video = await insertMediaAsset(f.pool, { tenantId: f.account.session.tenant.id, uploadedByUserId: f.account.session.user.id });
+      await f.pool.query("UPDATE media_assets SET media_type='video',mime_type='video/mp4',size_bytes=20 WHERE id=$1", [video]);
+      const png = await f.upload("png");
+      const jpeg = await f.upload();
+      for (const [ids, media] of [[[f.facebook], [video]], [[f.facebook, f.instagram], [png]], [[f.instagram], []]] as const) {
+        const response = await f.create([...ids], [...media]);
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: { code: "unsupported_post_media", message: "A mídia não é compatível com os destinos selecionados." } });
+      }
+      const multiple = await f.create([f.instagram], [jpeg, png]);
+      expect(multiple.status).toBe(400);
+      expect(await multiple.json()).toMatchObject({ error: { code: "invalid_post", fields: ["mediaAssetIds"] } });
+      expect((await f.pool.query("SELECT count(*)::int AS count FROM posts")).rows[0].count).toBe(0);
+    } finally { await f.close(); }
+  });
+
+  it("retorna 201 pending persistido, ignora autoridade do body e scheduler conclui sem duplicação", async () => {
+    const f = await fixture();
+    try {
+      const mediaId = await f.upload();
+      f.client.createInstagramContainer.mockImplementation(async input => {
+        // Independent DB connection proves Post, relations and both destinations committed before Meta.
+        expect((await f.pool.query("SELECT count(*)::int AS count FROM post_media WHERE media_asset_id=$1", [mediaId])).rows[0].count).toBe(1);
+        expect((await f.pool.query("SELECT count(*)::int AS count FROM post_publications")).rows[0].count).toBe(2);
+        expect(input.accessToken).toBe("private-page-token"); expect(input.accountId).toBe("102");
+        return { containerId: "200" };
+      });
+      const response = await f.create([f.facebook, f.instagram], [mediaId], true,
+        { tenantId: randomUUID(), authorUserId: randomUUID(), token: "attacker-token", provider: "tiktok", operationId: randomUUID() });
+      expect(response.status).toBe(201);
+      const result = await response.json() as CreatePostResponse;
+      expect(result.post).toMatchObject({ tenantId: f.account.session.tenant.id, authorUserId: f.account.session.user.id, status: "publishing" });
+      expect(result.publications.find(row => row.socialAccountId === f.facebook)?.status).toBe("published");
+      expect(result.publications.find(row => row.socialAccountId === f.instagram)?.status).toBe("publishing");
+      expect(Object.keys(result).sort()).toEqual(["post", "publications"]);
+      expect(Object.keys(result.post).sort()).toEqual(["authorUserId", "caption", "createdAt", "id", "mediaAssetIds", "publishedAt", "ragRunId", "scheduledFor", "status", "tenantId", "title", "updatedAt"]);
+      expect(Object.keys(result.publications[1]).sort()).toEqual(["createdAt", "errorCode", "errorMessage", "failedAt", "id", "postId", "providerPostId", "publishedAt", "socialAccountId", "startedAt", "status", "tenantId", "updatedAt"]);
+      expect(JSON.stringify(result)).not.toMatch(/https?:|ticket|token|operation|storage|sha256|path|container/i);
+      const persisted = await f.pool.query("SELECT status FROM posts WHERE id=$1", [result.post.id]);
+      expect(persisted.rows[0].status).toBe(result.post.status);
+      await f.finish();
+      const list = await apiFetch(`${f.api.baseUrl}/posts`, { headers: { Cookie: f.account.cookie } });
+      expect(await list.json()).toMatchObject([{ status: "published" }]);
+      expect(f.client.publishPhoto).toHaveBeenCalledTimes(1); expect(f.client.createInstagramContainer).toHaveBeenCalledTimes(1); expect(f.client.publishInstagramContainer).toHaveBeenCalledTimes(1);
+      expect((await f.pool.query("SELECT provider_post_id FROM post_publications WHERE social_account_id=$1", [f.instagram])).rows[0].provider_post_id).toBe("300");
+    } finally { await f.close(); }
+  });
+
+  it.each(["webp", "revoked", "scope"] as const)("rejeita seleção mista com %s e não emite Meta", async rejection => {
+    const f = await fixture();
+    try {
+      const mediaId = await f.upload();
+      if (rejection === "webp") await f.pool.query("UPDATE media_assets SET mime_type='image/webp' WHERE id=$1", [mediaId]);
+      else if (rejection === "revoked") await f.pool.query("UPDATE oauth_connections SET status='revoked',revoked_at=now(),access_token_encrypted=NULL WHERE id=(SELECT oauth_connection_id FROM social_accounts WHERE id=$1)", [f.instagram]);
+      else await f.pool.query("UPDATE oauth_connections SET scopes=ARRAY['pages_show_list','pages_read_engagement','instagram_basic'] WHERE id=(SELECT oauth_connection_id FROM social_accounts WHERE id=$1)", [f.instagram]);
+      const response = await f.create([f.facebook, f.instagram], [mediaId], true);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: rejection === "webp" ? "unsupported_post_media" : "invalid_post_destination" } });
+      expect((await f.pool.query("SELECT count(*)::int AS count FROM posts")).rows[0].count).toBe(0);
+      expect((await f.pool.query("SELECT count(*)::int AS count FROM post_media")).rows[0].count).toBe(0);
+      expect((await f.pool.query("SELECT count(*)::int AS count FROM post_publications")).rows[0].count).toBe(0);
+      for (const method of Object.values(f.client)) expect(method).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+
+  it("rollback do INSERT de destinos mistos desfaz Post e relação antes de Meta", async () => {
+    const f = await fixture();
+    try {
+      const mediaId = await f.upload();
+      await f.pool.query("CREATE FUNCTION reject_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test destination failure'; END; $$");
+      await f.pool.query("CREATE TRIGGER reject_publication BEFORE INSERT ON post_publications FOR EACH ROW EXECUTE FUNCTION reject_publication()");
+      const response = await f.create([f.facebook, f.instagram], [mediaId], true);
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: { code: "internal_error", message: "Não foi possível concluir a operação." } });
+      for (const table of ["posts", "post_media", "post_publications"]) expect((await f.pool.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count).toBe(0);
+      expect((await f.pool.query("SELECT count(*)::int AS count FROM media_assets")).rows[0].count).toBe(1);
+      for (const method of Object.values(f.client)) expect(method).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+
+  it.each(["facebook", "instagram"] as const)("preserva sucesso do outro provider quando %s falha", async failure => {
+    const f = await fixture();
+    try {
+      const mediaId = await f.upload();
+      if (failure === "facebook") f.client.publishPhoto.mockRejectedValue(new MetaPublishingClientError("meta_permission_denied", "publish_photo"));
+      else f.client.createInstagramContainer.mockRejectedValue(new MetaPublishingClientError("meta_permission_denied", "create_instagram_container"));
+      const response = await f.create([f.facebook, f.instagram], [mediaId], true);
+      expect(response.status).toBe(201);
+      await f.finish();
+      expect((await f.pool.query("SELECT status FROM posts")).rows[0].status).toBe("partially_failed");
+      const rows = (await f.pool.query("SELECT social_account_id,status,error_code FROM post_publications")).rows;
+      expect(rows.find(row => row.social_account_id === (failure === "facebook" ? f.facebook : f.instagram))).toMatchObject({ status: "failed", error_code: "meta_permission_denied" });
+      expect(rows.find(row => row.social_account_id === (failure === "facebook" ? f.instagram : f.facebook))).toMatchObject({ status: "published", error_code: null });
+    } finally { await f.close(); }
+  });
+
+  it("retorna 201 pending para Reel misto e o scheduler termina os dois destinos", async () => {
+    const f = await fixture();
+    try {
+      const mediaId = await f.upload("mp4");
+      f.client.startFacebookReel.mockImplementation(async input => {
+        expect(input.pageId).toBe("101");
+        expect((await f.pool.query("SELECT count(*)::int AS count FROM post_publications")).rows[0].count).toBe(2);
+        return { videoId: "400" };
+      });
+      f.client.uploadFacebookReel.mockImplementation(async input => { for await (const chunk of input.source) expect(chunk).toBeInstanceOf(Buffer); });
+      f.client.getFacebookReelStatus.mockImplementation(async () => ({ uploadingPhase: "complete", processingPhase: "complete",
+        publishingPhase: f.client.finishFacebookReel.mock.calls.length ? "complete" : "not_started",
+        published: f.client.finishFacebookReel.mock.calls.length > 0, uploadedBytes: 20, videoStatus: "ready" }));
+      f.client.finishFacebookReel.mockResolvedValue(undefined);
+      const response = await f.create([f.facebook, f.instagram], [mediaId], true);
+      expect(response.status).toBe(201);
+      const result = await response.json() as CreatePostResponse;
+      expect(result.post.status).toBe("publishing");
+      expect(result.publications.every(row => row.status === "publishing")).toBe(true);
+      await f.finish();
+      expect((await f.pool.query("SELECT status FROM posts")).rows[0].status).toBe("published");
+      expect(f.client.startFacebookReel).toHaveBeenCalledTimes(1); expect(f.client.uploadFacebookReel).toHaveBeenCalledTimes(1);
+      expect(f.client.finishFacebookReel).toHaveBeenCalledTimes(1);
+      expect(f.client.createInstagramContainer).toHaveBeenCalledTimes(1); expect(f.client.publishInstagramContainer).toHaveBeenCalledTimes(1);
+      expect(f.client.publishPhoto).not.toHaveBeenCalled(); expect(f.client.publishText).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+
+  it("cliente desconectado após commit não cancela criação nem causa segundo container", async () => {
+    const f = await fixture();
+    const controller = new AbortController();
+    try {
+      const mediaId = await f.upload();
+      f.client.createInstagramContainer.mockImplementation(async () => { controller.abort(); return { containerId: "200" }; });
+      await expect(f.create([f.instagram], [mediaId], true, {}, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+      await f.api.server.publicationCoordinator.whenIdle();
+      await f.finish();
+      expect((await f.pool.query("SELECT status FROM post_publications")).rows).toEqual([{ status: "published" }]);
+      expect(f.client.createInstagramContainer).toHaveBeenCalledTimes(1); expect(f.client.publishInstagramContainer).toHaveBeenCalledTimes(1);
+    } finally { await f.close(); }
+  });
+});
+
 describe("ciclo de vida do scheduler da API", () => {
   if (!process.env.TEST_DATABASE_URL) {
     it.skip("exige TEST_DATABASE_URL", () => undefined);
@@ -1246,7 +1497,7 @@ describe("ciclo de vida do scheduler da API", () => {
       authRateLimit: { maxAttempts: 100, windowMs: 60_000 },
       corsOrigin: "http://localhost:5173",
       logger: { error: vi.fn() },
-      metaPublishingClient: { publishText, publishPhoto: vi.fn() },
+      metaPublishingClient: { ...asyncPublishingStubs(), publishText, publishPhoto: vi.fn() },
       publicationSchedulerOptions: {
         setInterval: callback => { timerCallback = callback; return 456; },
         clearInterval: cancelTimer,

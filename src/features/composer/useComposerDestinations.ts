@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SocialAccount } from "../../../shared/socialAccountContract";
+import { requiredPublishingScopes } from "../../../shared/publicationPolicy";
 import type { SocialAccountsRepository } from "../../data/socialAccounts/SocialAccountsRepository";
 
 export type ComposerDestinationsState = {
   error: string | null;
-  facebookPages: SocialAccount[];
+  accounts: SocialAccount[];
+  reconnectionRequired: boolean;
   isLoading: boolean;
   selectedIds: string[];
   toggle(id: string): void;
@@ -13,10 +15,17 @@ export type ComposerDestinationsState = {
 type DestinationState = Omit<ComposerDestinationsState, "toggle"> & { workspaceId: string };
 
 function blankState(workspaceId: string): DestinationState {
-  return { workspaceId, error: null, facebookPages: [], isLoading: true, selectedIds: [] };
+  return { workspaceId, error: null, accounts: [], reconnectionRequired: false, isLoading: true, selectedIds: [] };
 }
 
-function publicPage(account: SocialAccount): SocialAccount {
+function eligible(account: SocialAccount): boolean {
+  return (account.provider === "facebook" || account.provider === "instagram")
+    && account.status === "connected"
+    && requiredPublishingScopes(account.provider).every((scope) => account.scopes.includes(scope))
+    && (account.tokenExpiresAt === null || Date.parse(account.tokenExpiresAt) > Date.now());
+}
+
+function publicAccount(account: SocialAccount): SocialAccount {
   return {
     createdAt: account.createdAt,
     disconnectedAt: account.disconnectedAt,
@@ -51,9 +60,9 @@ export function useComposerDestinations({ repository, workspaceId }: {
         setState((current) => current.workspaceId === workspaceId ? {
           ...current,
           error: null,
-          facebookPages: accounts
-            .filter((account) => account.provider === "facebook" && account.status === "connected")
-            .map(publicPage),
+          accounts: accounts.filter(eligible).map(publicAccount),
+          reconnectionRequired: accounts.some((account) => (account.provider === "facebook" || account.provider === "instagram")
+            && account.status !== "pending" && !eligible(account)),
           isLoading: false,
         } : current);
       },
@@ -61,8 +70,9 @@ export function useComposerDestinations({ repository, workspaceId }: {
         if (generation.current !== activeGeneration) return;
         setState((current) => current.workspaceId === workspaceId ? {
           ...current,
-          error: "Não foi possível carregar as Pages conectadas.",
-          facebookPages: [],
+          error: "Não foi possível carregar as contas conectadas.",
+          accounts: [],
+          reconnectionRequired: false,
           isLoading: false,
           selectedIds: [],
         } : current);
@@ -73,7 +83,7 @@ export function useComposerDestinations({ repository, workspaceId }: {
 
   const toggle = useCallback((id: string) => {
     setState((current) => {
-      if (current.workspaceId !== workspaceId || !current.facebookPages.some((page) => page.id === id)) return current;
+      if (current.workspaceId !== workspaceId || !current.accounts.some((account) => account.id === id)) return current;
       return { ...current, selectedIds: current.selectedIds.includes(id)
         ? current.selectedIds.filter((selectedId) => selectedId !== id)
         : [...current.selectedIds, id] };
@@ -83,7 +93,8 @@ export function useComposerDestinations({ repository, workspaceId }: {
   const visible = state.workspaceId === workspaceId ? state : blankState(workspaceId);
   return {
     error: visible.error,
-    facebookPages: visible.facebookPages,
+    accounts: visible.accounts,
+    reconnectionRequired: visible.reconnectionRequired,
     isLoading: visible.isLoading,
     selectedIds: visible.selectedIds,
     toggle,

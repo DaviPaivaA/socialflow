@@ -4,6 +4,8 @@ import { parseSocialTokenEncryptionKey } from "./socialTokenCrypto.ts";
 import type { MetaOAuthConfig } from "./metaOAuthClient.ts";
 import { isAbsolute, resolve } from "node:path";
 import type { MediaLimits } from "./mediaStorage.ts";
+import type { MetaMediaConfig } from "./metaMediaSigner.ts";
+import { isIP } from "node:net";
 
 export type DatabaseConfig = {
   databaseUrl: string;
@@ -16,6 +18,7 @@ export type ServerConfig = DatabaseConfig & {
   mediaLimits: MediaLimits;
   mediaStoragePath: string;
   metaOAuth: MetaOAuthConfig;
+  metaMedia: MetaMediaConfig;
   port: number;
   sessionCookie: SessionCookieConfig;
   sessionTtlSeconds: number;
@@ -272,6 +275,7 @@ export function loadServerConfig(
     },
     mediaStoragePath: resolve(mediaStoragePath || "data/media"),
     metaOAuth,
+    metaMedia: loadMetaMediaConfig(environment, metaOAuth),
     port: parsePort(environment.PORT),
     sessionCookie: {
       maxAgeSeconds: sessionTtlHours * 60 * 60,
@@ -288,4 +292,36 @@ export function loadServerConfig(
       false,
     ),
   };
+}
+
+function loadMetaMediaConfig(environment: NodeJS.ProcessEnv, oauth: MetaOAuthConfig): MetaMediaConfig {
+  const origin = environment.META_MEDIA_PUBLIC_ORIGIN?.trim();
+  const key = environment.META_MEDIA_SIGNING_KEY;
+  if (!origin && !key) return null;
+  if (!origin || !key) throw new Error("META_MEDIA_PUBLIC_ORIGIN e META_MEDIA_SIGNING_KEY devem ser configuradas juntas.");
+  const signingKey = Buffer.from(key, "base64");
+  if (signingKey.length !== 32 || signingKey.toString("base64") !== key ||
+    key === environment.SOCIAL_TOKEN_ENCRYPTION_KEY?.trim() || key === oauth.appSecret) {
+    throw new Error("META_MEDIA_SIGNING_KEY deve ser uma chave Base64 canônica independente de 32 bytes.");
+  }
+  if (!oauth.enabled || !oauth.appId || !oauth.appSecret || !oauth.redirectUri) throw new Error("Mídia Meta exige OAuth Meta configurado.");
+  const ttlSeconds = parseInteger("META_MEDIA_URL_TTL_SECONDS", environment.META_MEDIA_URL_TTL_SECONDS, 3600, 7200);
+  if (ttlSeconds < 1800) throw new Error("META_MEDIA_URL_TTL_SECONDS deve estar entre 1800 e 7200.");
+  try {
+    const url = new URL(origin);
+    const host = url.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+    const loopback = host === "localhost" || host === "::1" || /^127\./.test(host);
+    const development = environment.NODE_ENV === "test" || environment.NODE_ENV === "development";
+    const ip = isIP(host);
+    const octets = host.split(".").map(Number);
+    const privateIp = ip === 4 ? (octets[0] === 0 || octets[0] === 10 || octets[0] === 127 ||
+      (octets[0] === 169 && octets[1] === 254) || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+      (octets[0] === 192 && octets[1] === 168) || (octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127) || octets[0] >= 224)
+      : ip === 6 && (host === "::" || host === "::1" || /^(fc|fd|fe[89ab]|ff|::ffff:)/.test(host));
+    const local = loopback || privateIp || (ip === 0 && (!host.includes(".") || /\.(localhost|local|internal|home|lan|test|invalid)$/.test(host)));
+    if (!/^https?:\/\/[^/?#]+\/?$/i.test(origin) || url.username || url.password || url.search || url.hash || url.pathname !== "/" ||
+      (url.protocol !== "https:" && !(url.protocol === "http:" && development && loopback)) ||
+      (environment.NODE_ENV === "production" && local)) throw null;
+    return { publicOrigin: url.origin, signingKey, ttlSeconds };
+  } catch { throw new Error("META_MEDIA_PUBLIC_ORIGIN deve ser uma origem pública HTTPS válida."); }
 }

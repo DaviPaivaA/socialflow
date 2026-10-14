@@ -10,6 +10,7 @@ const server = createApiServer({
   authRateLimit: config.authRateLimit,
   corsOrigin: config.corsOrigin,
   metaOAuth: config.metaOAuth,
+  metaMedia: config.metaMedia,
   mediaLimits: config.mediaLimits,
   mediaStoragePath: config.mediaStoragePath,
   pool,
@@ -24,13 +25,22 @@ async function shutdown(signal: string) {
   if (shutdownStarted) return;
   shutdownStarted = true;
   console.log(`Encerrando backend após ${signal}.`);
-
+  // External AbortSignal cancels preparation/pre-emit only. A Reel upload already
+  // sent can run for its own 300 s timeout; drain it plus a 30 s persistence margin.
+  const deadline = setTimeout(() => {
+    console.error("Prazo de encerramento do backend excedido; checkpoints serão retomados no reinício.");
+    process.exit(1);
+  }, 330_000);
   server.publicationScheduler.stop();
-  await server.publicationScheduler.whenIdle();
-  await new Promise<void>((resolve, reject) => {
+  // Stop accepting HTTP requests before draining; close and drain proceed together.
+  const closed = new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
-  await pool.end();
+  try {
+    const [closing] = await Promise.allSettled([closed, server.publicationScheduler.whenIdle()]);
+    await pool.end();
+    if (closing.status === "rejected") throw closing.reason;
+  } finally { clearTimeout(deadline); }
 }
 
 server.once("error", (error) => {

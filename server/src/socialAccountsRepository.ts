@@ -5,11 +5,13 @@ import type {
   UpdateSocialAccountInput,
 } from "../../shared/socialAccountContract.ts";
 import type { PostsContext } from "./postsContext.ts";
+import type { PublishingProvider } from "../../shared/publicationPolicy.ts";
 
 export type SocialAccountsContext = PostsContext;
 
-export type FacebookPublishingCredential = {
+export type MetaPublishingCredential = {
   accessTokenEncrypted: string | null;
+  provider: PublishingProvider;
   providerAccountId: string;
   scopes: string[];
   tasks: string[];
@@ -84,10 +86,10 @@ export interface SocialAccountsRepository {
     context: SocialAccountsContext,
     id: string,
   ): Promise<SocialAccount | null>;
-  findFacebookPublishingCredential(
+  findMetaPublishingCredential(
     context: SocialAccountsContext,
     id: string,
-  ): Promise<FacebookPublishingCredential | null>;
+  ): Promise<MetaPublishingCredential | null>;
   list(context: SocialAccountsContext): Promise<SocialAccount[]>;
   register(
     context: SocialAccountsContext,

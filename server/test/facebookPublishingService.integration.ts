@@ -10,17 +10,39 @@ import { FacebookPublishingService } from "../src/facebookPublishingService.ts";
 import { PostgresPostPublicationsRepository } from "../src/postPublicationsRepository.ts";
 import { PostgresSocialAccountsRepository } from "../src/postgresSocialAccountsRepository.ts";
 import { cipher, now, publicationFixture } from "./publicationFixtures.ts";
+import { asyncPublishingStubs } from "./metaPublishingClientStub.ts";
+import { MetaPublishingClientError } from "../src/metaPublishingClient.ts";
 
 describe.skipIf(!process.env.TEST_DATABASE_URL)("Facebook publication author and credentials (PostgreSQL)", () => {
   let fixture: Awaited<ReturnType<typeof publicationFixture>>;
   beforeAll(async () => { fixture = await publicationFixture(); });
   afterAll(async () => { await fixture?.close(); });
   function setup() {
-    const provider = { publishText: vi.fn().mockResolvedValue({ providerPostId: "100_200" }), publishPhoto: vi.fn() };
+    const provider = { ...asyncPublishingStubs(), publishText: vi.fn().mockResolvedValue({ providerPostId: "100_200" }), publishPhoto: vi.fn() };
     const repository = new PostgresPostPublicationsRepository(fixture.pool);
     const service = new FacebookPublishingService(repository, new PostgresSocialAccountsRepository(fixture.pool), cipher, { getPublishingContent: vi.fn() }, provider, () => now);
     return { service, repository, provider };
   }
+  it.each(["text", "photo"] as const)("ambiguous legacy %s terminates unknown in stale sweep without retry", async kind => {
+    const s = setup(); const post = await fixture.post();
+    let service = s.service;
+    if (kind === "photo") {
+      const id = randomUUID(); const mediaRepository = new PostgresMediaAssetsRepository(fixture.pool);
+      await mediaRepository.create({ tenantId: post.tenantId, authorUserId: post.authorUserId }, { id, mediaType: "image", mimeType: "image/jpeg", originalFilename: "image.jpg", sizeBytes: 8, sha256: "a".repeat(64), storageKey: `${post.tenantId}/${id}.jpg` });
+      await fixture.pool.query("INSERT INTO post_media (tenant_id,post_id,media_asset_id,position) VALUES ($1,$2,$3,0)", [post.tenantId, post.postId, id]);
+      service = new FacebookPublishingService(s.repository, new PostgresSocialAccountsRepository(fixture.pool), cipher,
+        { getPublishingContent: vi.fn().mockResolvedValue({ source: new Blob(["verified"]), mimeType: "image/jpeg", sizeBytes: 8 }) }, s.provider, () => now);
+    }
+    const mutation = kind === "text" ? s.provider.publishText : s.provider.publishPhoto;
+    mutation.mockRejectedValue(new MetaPublishingClientError("meta_timeout", kind === "text" ? "publish_text" : "publish_photo", { outcome: "unknown" }));
+    const coordinator = new PublicationCoordinator(s.repository, service, { now: () => now });
+    await coordinator.publishDueBatch(now); await coordinator.publishDueBatch(now);
+    expect((await s.repository.listForPost(post.tenantId, post.postId))[0].status).toBe("publishing");
+    await coordinator.failStale(new Date(now.getTime() + 601000));
+    expect((await s.repository.listForPost(post.tenantId, post.postId))[0]).toMatchObject({ status: "failed", errorCode: "publication_state_unknown" });
+    expect(mutation).toHaveBeenCalledTimes(1);
+    expect((await fixture.pool.query("SELECT 1 FROM publication_operations WHERE tenant_id=$1 AND publication_id=$2", [post.tenantId, post.publications[0].id])).rowCount).toBe(0);
+  });
   it.each(["same size", "different size"])("terminally fails changed scheduled media (%s) without provider calls", async mode => {
     const root = await mkdtemp(join(tmpdir(), "publication-integrity-"));
     try {
@@ -43,6 +65,50 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("Facebook publication author and
       expect(s.provider.publishPhoto).not.toHaveBeenCalled();
       expect(await s.repository.claimPost(post.tenantId, post.postId, now)).toEqual([]);
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it.each([
+    ["account", "meta_page_unavailable"], ["membership", "publication_author_unavailable"],
+    ["scopes", "meta_permission_denied"], ["task", "meta_permission_denied"], ["token", "meta_token_invalid"],
+    ["rotated-token", null],
+  ] as const)("revalidates persisted %s after pending legacy photo I/O", async (change, code) => {
+    const s = setup(); const post = await fixture.post(); const target = post.publications[0]; const assetId = randomUUID();
+    const mediaRepository = new PostgresMediaAssetsRepository(fixture.pool);
+    await mediaRepository.create({ tenantId: post.tenantId, authorUserId: post.authorUserId }, { id: assetId, mediaType: "image", mimeType: "image/jpeg", originalFilename: "image.jpg", sizeBytes: 8, sha256: "a".repeat(64), storageKey: `${post.tenantId}/${assetId}.jpg` });
+    await fixture.pool.query("INSERT INTO post_media (tenant_id,post_id,media_asset_id,position) VALUES ($1,$2,$3,0)", [post.tenantId, post.postId, assetId]);
+    const other = await fixture.post();
+    if (change === "membership") await fixture.pool.query("INSERT INTO tenant_members (tenant_id,user_id,role) VALUES ($1,$2,'owner')", [post.tenantId, other.authorUserId]);
+    let instant = now;
+    if (change === "token") await fixture.pool.query("UPDATE social_account_credentials SET access_token_expires_at=$1 WHERE tenant_id=$2 AND social_account_id=$3", [new Date(now.getTime() + 1000), target.tenantId, target.socialAccountId]);
+    await s.repository.claimPost(post.tenantId, post.postId, now);
+    let resolve!: (content: { source: Blob; mimeType: string; sizeBytes: number }) => void;
+    const media = { getPublishingContent: vi.fn(() => new Promise<{ source: Blob; mimeType: string; sizeBytes: number }>(done => { resolve = done; })) };
+    s.provider.publishPhoto.mockResolvedValue({ providerPostId: "100_300" });
+    const service = new FacebookPublishingService(s.repository, new PostgresSocialAccountsRepository(fixture.pool), cipher, media, s.provider, () => instant);
+    const pending = service.publish(target).then(() => null, error => error);
+    await vi.waitFor(() => expect(resolve).toBeTypeOf("function"));
+    const source = new Blob(["verified"]);
+    try {
+      if (change === "account") await fixture.pool.query("UPDATE social_accounts SET is_active=false,disconnected_at=$1 WHERE tenant_id=$2 AND id=$3", [now, target.tenantId, target.socialAccountId]);
+      if (change === "membership") await fixture.pool.query("DELETE FROM tenant_members WHERE tenant_id=$1 AND user_id=$2", [post.tenantId, post.authorUserId]);
+      if (change === "scopes") await fixture.pool.query("UPDATE oauth_connections SET scopes='{}' WHERE tenant_id=$1 AND id=$2", [post.tenantId, post.connectionId]);
+      if (change === "task") await fixture.pool.query("UPDATE social_accounts SET metadata='{}' WHERE tenant_id=$1 AND id=$2", [target.tenantId, target.socialAccountId]);
+      if (change === "token") instant = new Date(now.getTime() + 1001);
+      if (change === "rotated-token") await fixture.pool.query("UPDATE social_account_credentials SET access_token_encrypted=$1 WHERE tenant_id=$2 AND social_account_id=$3", [Buffer.from(cipher.encryptSecret("rotated-page-token")), target.tenantId, target.socialAccountId]);
+      resolve({ source, mimeType: "image/jpeg", sizeBytes: 8 });
+      const result = await pending;
+      if (code) {
+        expect(result).toMatchObject({ name: "PublicationError", code });
+        expect(s.provider.publishPhoto).not.toHaveBeenCalled();
+        expect((await s.repository.listForPost(post.tenantId, post.postId))[0]).toMatchObject({ status: "publishing", providerPostId: null });
+      } else {
+        expect(result).toBeNull();
+        expect(s.provider.publishPhoto).toHaveBeenCalledExactlyOnceWith({ pageId: "100", accessToken: "rotated-page-token", message: "Message", source, mimeType: "image/jpeg" });
+        expect((await s.repository.listForPost(post.tenantId, post.postId))[0]).toMatchObject({ status: "published", providerPostId: "100_300" });
+      }
+      expect(s.provider.publishText).not.toHaveBeenCalled();
+      expect((await s.repository.listForPost(other.tenantId, other.postId))[0]).toMatchObject({ status: "scheduled", providerPostId: null });
+      expect((await fixture.pool.query("SELECT 1 FROM publication_operations WHERE tenant_id=$1 AND publication_id=$2", [target.tenantId, target.id])).rowCount).toBe(0);
+    } finally { resolve({ source, mimeType: "image/jpeg", sizeBytes: 8 }); await pending; }
   });
   it("publishes scheduler claim with persisted author, rejects removed membership even when another member exists", async () => {
     const s = setup(); const post = await fixture.post();

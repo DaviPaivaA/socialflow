@@ -23,6 +23,80 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication coordinator (Postgr
     return new PublicationCoordinator(selectedRepository, { publish }, { now: () => now, ...options });
   }
 
+  it("returns a persisted snapshot at five seconds while its provider action remains in flight", async () => {
+    const post = await fixture.post();
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let elapsed = 0;
+    const runner = coordinator(async target => {
+      await pending;
+      await repository.markPublished({ ...target, providerPostId: "late-success", publishedAt: now });
+    }, { now: () => new Date(now.getTime() + elapsed), sleep: async ms => { elapsed += ms; }, pollIntervalMs: 5000 });
+    const response = runner.publishPostNow(post.tenantId, post.postId);
+    let result: Awaited<typeof response> | null;
+    try {
+      result = await Promise.race([response, new Promise<null>(resolve => setTimeout(() => resolve(null), 2000))]);
+    } finally { release(); }
+    await response;
+    expect(result!).not.toBeNull();
+    expect(result!.publications[0].status).toBe("publishing");
+    expect(elapsed).toBe(5_000);
+    await runner.whenIdle();
+    expect((await repository.listForPost(post.tenantId, post.postId))[0]).toMatchObject({ status: "published", providerPostId: "late-success" });
+  });
+
+  it("returns due ticks without awaiting upload and keeps at most two process-wide actions", async () => {
+    const post = await fixture.post(3);
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let active = 0; let maximum = 0;
+    const runner = coordinator(async target => {
+      active++; maximum = Math.max(maximum, active);
+      await pending;
+      await repository.markPublished({ ...target, providerPostId: "result", publishedAt: now });
+      active--;
+    });
+    const tick = runner.publishDueBatch(now);
+    let returned: boolean;
+    try {
+      returned = await Promise.race([tick.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 2000))]);
+      if (returned) {
+        await runner.publishDueBatch(now);
+        expect((await repository.listForPost(post.tenantId, post.postId)).map(row => row.status).sort()).toEqual(["publishing", "publishing", "scheduled"]);
+        expect(active).toBe(2);
+      }
+    } finally { release(); }
+    await tick;
+    expect(returned).toBe(true);
+    await runner.whenIdle();
+    await runner.publishDueBatch(now);
+    await runner.whenIdle();
+    expect(maximum).toBe(2);
+    expect((await repository.listForPost(post.tenantId, post.postId)).every(row => row.status === "published")).toBe(true);
+  });
+
+  it("does not claim another destination after stop while it drains a provider request already emitted", async () => {
+    const post = await fixture.post(3);
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const runner = coordinator(async target => {
+      await pending;
+      await repository.markPublished({ ...target, providerPostId: "already-issued", publishedAt: now });
+    });
+    const tick = runner.publishDueBatch(now);
+    await vi.waitFor(async () => expect((await repository.listForPost(post.tenantId, post.postId)).some(row => row.status === "publishing")).toBe(true));
+    try {
+      runner.stop();
+      let idle = false;
+      const drain = runner.whenIdle().then(() => { idle = true; });
+      await runner.publishDueBatch(now);
+      expect(idle).toBe(false);
+      release();
+      await tick; await drain;
+      expect((await repository.listForPost(post.tenantId, post.postId)).filter(row => row.status === "scheduled").length).toBeGreaterThan(0);
+    } finally { release(); await tick; }
+  });
+
   it("publishes every claimed Page and returns persisted provider IDs", async () => {
     const post = await fixture.post(2);
     const publish = vi.fn(async (claim: ClaimedPublication) => {
@@ -208,7 +282,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication coordinator (Postgr
       await repository.markPublished({ id: claim.id, tenantId: claim.tenantId, providerPostId: "due_result", publishedAt: now });
     });
 
-    await coordinator(publish).publishDueBatch(now);
+    const runner = coordinator(publish);
+    await runner.publishDueBatch(now);
+    await runner.whenIdle();
 
     expect((await repository.findPostForPublication(due.tenantId, due.postId))?.status).toBe("partially_failed");
     expect((await repository.listForPost(due.tenantId, due.postId)).map(row => row.status).sort()).toEqual(["failed", "published"]);
@@ -222,14 +298,21 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication coordinator (Postgr
     let attempts = 0;
     let firstId: string | null = null;
     const statusesAtDispatch: string[] = [];
+    // Keep the second provider action in flight until the HTTP snapshot returns.
+    let releaseSecond!: () => void;
+    const secondMayFinish = new Promise<void>(resolve => { releaseSecond = resolve; });
     const publish = vi.fn(async (claim: ClaimedPublication) => {
-      attempts += 1;
-      const row = (await repository.listForPost(claim.tenantId, claim.postId)).find(value => value.id === claim.id);
-      statusesAtDispatch.push(row?.status ?? "missing");
-      if (attempts === 1) {
+      const first = ++attempts === 1;
+      if (first) {
         firstId = claim.id;
         elapsed = 600_001;
+      }
+      const row = (await repository.listForPost(claim.tenantId, claim.postId)).find(value => value.id === claim.id);
+      statusesAtDispatch.push(row?.status ?? "missing");
+      if (first) {
         await runner.failStale(new Date(now.getTime() + elapsed));
+      } else {
+        await secondMayFinish;
       }
       await repository.markPublished({
         id: claim.id, tenantId: claim.tenantId, providerPostId: `page_${claim.id}`,
@@ -238,16 +321,23 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication coordinator (Postgr
     });
     const runner = coordinator(publish, {
       now: () => new Date(now.getTime() + elapsed),
-      sleep: async () => {},
+      sleep: async milliseconds => { elapsed += milliseconds; },
       waitTimeoutMs: 1,
     });
 
-    const result = await runner.publishPostNow(post.tenantId, post.postId);
+    try {
+      const result = await runner.publishPostNow(post.tenantId, post.postId);
+      expect(result.post.status).toBe("publishing");
+    } finally {
+      releaseSecond();
+      await runner.whenIdle();
+    }
 
+    const rows = await repository.listForPost(post.tenantId, post.postId);
     expect(statusesAtDispatch).toEqual(["publishing", "publishing"]);
-    expect(result.publications.find(row => row.id === firstId)).toMatchObject({ status: "failed", errorCode: "publication_state_unknown" });
-    expect(result.publications.find(row => row.id !== firstId)?.status).toBe("published");
-    expect(result.post.status).toBe("partially_failed");
+    expect(rows.find(row => row.id === firstId)).toMatchObject({ status: "failed", errorCode: "publication_state_unknown" });
+    expect(rows.find(row => row.id !== firstId)?.status).toBe("published");
+    expect((await repository.findPostForPublication(post.tenantId, post.postId))?.status).toBe("partially_failed");
     expect(publish).toHaveBeenCalledTimes(2);
   });
 
@@ -275,6 +365,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication coordinator (Postgr
 
     await runner.publishDueBatch(now);
 
+    await runner.whenIdle();
+
     const rows = await repository.listForPost(post.tenantId, post.postId);
     expect(statusesAtDispatch).toEqual(["publishing", "publishing"]);
     expect(rows.find(row => row.id === firstId)).toMatchObject({ status: "failed", errorCode: "publication_state_unknown" });
@@ -294,7 +386,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication coordinator (Postgr
       });
     };
 
-    await coordinator(publish, { now: () => new Date(now.getTime() + elapsed) }).publishDueBatch(now);
+    const runner = coordinator(publish, { now: () => new Date(now.getTime() + elapsed) });
+    await runner.publishDueBatch(now);
+    await runner.whenIdle();
 
     const persisted = await repository.findPostForPublication(post.tenantId, post.postId);
     expect(persisted?.status).toBe("published");
@@ -307,7 +401,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication coordinator (Postgr
       await repository.markPublished({ id: claim.id, tenantId: claim.tenantId, providerPostId: `page_${claim.id}`, publishedAt: now });
     });
 
-    await coordinator(publish, { now: () => new Date(now.getTime() - 60_000) }).publishDueBatch(now);
+    const runner = coordinator(publish, { now: () => new Date(now.getTime() - 60_000) });
+    await runner.publishDueBatch(now);
+    await runner.whenIdle();
 
     expect((await repository.listForPost(post.tenantId, post.postId)).map(row => row.status)).toEqual(["published", "published"]);
     expect(publish).toHaveBeenCalledTimes(2);
@@ -349,7 +445,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication coordinator (Postgr
       await repository.markPublished({ id: claim.id, tenantId: claim.tenantId, providerPostId: "persisted_first", publishedAt: now });
     });
 
-    await expect(coordinator(publish, {}, failingRepository).publishDueBatch(now)).rejects.toBe(transient);
+    const runner = coordinator(publish, {}, failingRepository);
+    await expect(runner.publishDueBatch(now)).rejects.toBe(transient);
+    await runner.whenIdle();
 
     expect((await repository.findPostForPublication(post.tenantId, post.postId))).toMatchObject({ status: "published", publishedAt: now.toISOString() });
     expect((await repository.listForPost(post.tenantId, post.postId))[0]).toMatchObject({ status: "published", providerPostId: "persisted_first" });
@@ -362,21 +460,24 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication coordinator (Postgr
     const post = await fixture.post();
     const transient = new Error("one-time aggregate refresh failure");
     const failingRepository = Object.create(repository) as PostgresPostPublicationsRepository;
-    let refreshes = 0;
+    let refreshUnavailable = true;
     failingRepository.refreshPostAggregate = async (tenantId, postId, refreshAt) => {
-      refreshes += 1;
-      if (refreshes === 1) throw transient;
+      if (refreshUnavailable) throw transient;
       return repository.refreshPostAggregate(tenantId, postId, refreshAt);
     };
     const publish = vi.fn(async (claim: ClaimedPublication) => {
       await repository.markPublished({ id: claim.id, tenantId: claim.tenantId, providerPostId: "persisted_page_post", publishedAt: now });
     });
 
-    await expect(coordinator(publish, {}, failingRepository).publishDueBatch(now)).rejects.toBe(transient);
+    const runner = coordinator(publish, {}, failingRepository);
+    // Tick acquisition need not await the background action's aggregate write.
+    await runner.publishDueBatch(now).catch(error => { expect(error).toBe(transient); });
+    await runner.whenIdle();
     expect((await repository.listForPost(post.tenantId, post.postId))[0].status).toBe("published");
     expect((await repository.findPostForPublication(post.tenantId, post.postId))?.status).toBe("scheduled");
 
     // A fresh coordinator has no in-memory record of the earlier failure.
+    refreshUnavailable = false;
     await coordinator(publish).publishDueBatch(new Date(now.getTime() + 15_000));
 
     expect((await repository.findPostForPublication(post.tenantId, post.postId))?.status).toBe("published");

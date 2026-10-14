@@ -233,12 +233,13 @@ describe("contas sociais HTTP com PostgreSQL", () => {
          WHERE tenant_id = $1::uuid AND id = $2::uuid`,
         [tenantA, facebookA.id],
       );
-      const publishingCredential = await repository.findFacebookPublishingCredential(
+      const publishingCredential = await repository.findMetaPublishingCredential(
         contextA,
         facebookA.id,
       );
       expect(publishingCredential).toEqual({
         accessTokenEncrypted: expect.stringMatching(/^v1\./),
+        provider: "facebook",
         providerAccountId: "facebook-a",
         scopes: ["pages_show_list", "pages_manage_posts"],
         tasks: ["ANALYZE", "CREATE_CONTENT"],
@@ -248,18 +249,18 @@ describe("contas sociais HTTP com PostgreSQL", () => {
         "plaintext-facebook-a",
       );
       await expect(
-        repository.findFacebookPublishingCredential(contextB, facebookA.id),
+        repository.findMetaPublishingCredential(contextB, facebookA.id),
       ).resolves.toBeNull();
       await expect(
-        repository.findFacebookPublishingCredential(contextA, instagramA.id),
-      ).resolves.toBeNull();
+        repository.findMetaPublishingCredential(contextA, instagramA.id),
+      ).resolves.toMatchObject({ provider: "instagram", tasks: [] });
       await pool.query(
         `UPDATE social_accounts SET metadata = '{"tasks":["CREATE_CONTENT",42]}'::jsonb
          WHERE tenant_id = $1::uuid AND id = $2::uuid`,
         [tenantA, facebookA.id],
       );
       await expect(
-        repository.findFacebookPublishingCredential(contextA, facebookA.id),
+        repository.findMetaPublishingCredential(contextA, facebookA.id),
       ).resolves.toEqual(expect.objectContaining({ tasks: [] }));
       await expect(
         service.register(contextA, {

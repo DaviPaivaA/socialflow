@@ -8,7 +8,7 @@ import {
   type UpdateSocialAccountInput,
 } from "../../shared/socialAccountContract.ts";
 import type {
-  FacebookPublishingCredential,
+  MetaPublishingCredential,
   MetaAuthorizationContext,
   PersistMetaAuthorizationInput,
   PersistSocialAccountInput,
@@ -46,7 +46,9 @@ type CreatedConnectionRow = QueryResultRow & { id: string };
 type AccountConnectionRow = QueryResultRow & { oauth_connection_id: string };
 type CreatedAccountRow = QueryResultRow & { id: string };
 
-type FacebookPublishingCredentialRow = QueryResultRow & {
+type MetaPublishingCredentialRow = QueryResultRow & {
+  context_valid: boolean;
+  account_type: string | null;
   access_token_encrypted: Buffer | null;
   access_token_expires_at: Date | null;
   external_account_id: string;
@@ -348,14 +350,36 @@ export class PostgresSocialAccountsRepository
     return findByIdWith(this.pool, context, id);
   }
 
-  async findFacebookPublishingCredential(
+  async findMetaPublishingCredential(
     context: SocialAccountsContext,
     id: string,
-  ): Promise<FacebookPublishingCredential | null> {
-    await this.assertContext(context);
-    const result = await this.pool.query<FacebookPublishingCredentialRow>(
+  ): Promise<MetaPublishingCredential | null> {
+    // Gate the credential SELECT itself: do not read secrets if the persisted
+    // author is inactive or has lost membership between separate statements.
+    const result = await this.pool.query<MetaPublishingCredentialRow>(
       `
+        WITH publishing_context AS (
+          SELECT EXISTS (
+            SELECT 1 FROM tenant_members member_row
+            JOIN users user_row ON user_row.id = member_row.user_id
+            JOIN tenants tenant_row ON tenant_row.id = member_row.tenant_id
+            WHERE member_row.tenant_id = $1::uuid
+              AND member_row.user_id = $3::uuid
+              AND user_row.is_active = true
+          ) AS context_valid
+        )
         SELECT
+          publishing_context.context_valid,
+          candidate.account_type,
+          candidate.external_account_id,
+          candidate.metadata,
+          candidate.scopes,
+          candidate.access_token_encrypted,
+          candidate.access_token_expires_at
+        FROM publishing_context
+        LEFT JOIN LATERAL (
+        SELECT
+          account_row.account_type,
           account_row.external_account_id,
           account_row.metadata,
           connection_row.scopes,
@@ -370,14 +394,24 @@ export class PostgresSocialAccountsRepository
          AND credential_row.social_account_id = account_row.id
         WHERE account_row.tenant_id = $1::uuid
           AND account_row.id = $2::uuid
-          AND account_row.account_type = 'facebook_page'::social_account_type
+          AND publishing_context.context_valid
+          AND account_row.account_type IN ('facebook_page', 'instagram_business')
+          AND account_row.is_active = true
+          AND account_row.disconnected_at IS NULL
+          AND connection_row.platform = 'meta'
+          AND connection_row.status IN ('active', 'expired')
+          AND connection_row.revoked_at IS NULL
+        ) candidate ON true
       `,
-      [context.tenantId, id],
+      [context.tenantId, id, context.authorUserId],
     );
     const row = result.rows[0];
-    if (!row) return null;
+    if (!row?.context_valid) throw new InvalidSocialAccountsContextError();
+    const provider = providerFromAccountType(row.account_type);
+    if (provider !== "facebook" && provider !== "instagram") return null;
     return {
       accessTokenEncrypted: row.access_token_encrypted?.toString("utf8") ?? null,
+      provider,
       providerAccountId: row.external_account_id,
       scopes: row.scopes,
       tasks: pageTasksFromMetadata(row.metadata),

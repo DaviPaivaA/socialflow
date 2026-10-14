@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { isPostPublication, type PostPublication } from "../../shared/postPublicationContract.ts";
 import { isPost, type Post } from "./postContract.ts";
+import { preparePublicationOperation } from "./publicationOperationsRepository.ts";
 
 export type ClaimedPublication = { id: string; postId: string; socialAccountId: string; tenantId: string };
 
@@ -14,6 +15,7 @@ export interface PostPublicationsRepository {
   refreshPostAggregate(tenantId: string, postId: string, now: Date): Promise<Post>;
   listAggregateRefreshCandidates(limit: number): Promise<Array<{ tenantId: string; postId: string }>>;
   findPostForPublication(tenantId: string, postId: string): Promise<Post | null>;
+  findClaimedPublication?(tenantId: string, publicationId: string): Promise<ClaimedPublication | null>;
 }
 
 function mapPost(row: Record<string, unknown>): Post {
@@ -35,7 +37,13 @@ const POST_SELECT = `SELECT post.*,
   FROM posts post WHERE post.tenant_id=$1 AND post.id=$2`;
 
 export class PostgresPostPublicationsRepository implements PostPublicationsRepository {
-  constructor(private readonly pool: Pool) {}
+  private readonly pool: Pool;
+  private readonly graphApiVersion: string;
+
+  constructor(pool: Pool, graphApiVersion = "v26.0") {
+    this.pool = pool;
+    this.graphApiVersion = graphApiVersion;
+  }
 
   async claimPost(tenantId: string, postId: string, now: Date, limit?: number): Promise<ClaimedPublication[]> {
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) throw new Error("Limite de publicações inválido.");
@@ -48,7 +56,10 @@ export class PostgresPostPublicationsRepository implements PostPublicationsRepos
   }
 
   private async claim(now: Date, limit: number | null, tenantId: string | null, postId: string | null): Promise<ClaimedPublication[]> {
-    const result = await this.pool.query<ClaimedPublication>(`
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<ClaimedPublication>(`
       WITH candidates AS (
         SELECT destination.id FROM post_publications destination
         JOIN posts post ON post.tenant_id = destination.tenant_id AND post.id = destination.post_id
@@ -56,7 +67,7 @@ export class PostgresPostPublicationsRepository implements PostPublicationsRepos
           AND post.status IN ('scheduled', 'publishing')
           AND ($3::uuid IS NULL OR destination.tenant_id = $3)
           AND ($4::uuid IS NULL OR destination.post_id = $4)
-        ORDER BY post.scheduled_for, destination.id
+        ORDER BY post.scheduled_for, destination.tenant_id, destination.id
         LIMIT $2 FOR UPDATE OF destination SKIP LOCKED
       )
       UPDATE post_publications destination SET status = 'publishing', started_at = $1, updated_at = $1
@@ -64,7 +75,13 @@ export class PostgresPostPublicationsRepository implements PostPublicationsRepos
       RETURNING destination.id, destination.post_id AS "postId",
         destination.social_account_id AS "socialAccountId", destination.tenant_id AS "tenantId"
     `, [now, limit, tenantId, postId]);
-    return result.rows;
+      for (const target of result.rows) await preparePublicationOperation(client, target, { graphApiVersion: this.graphApiVersion, now });
+      await client.query("COMMIT");
+      return result.rows;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
   }
 
   async listForPost(tenantId: string, postId: string): Promise<PostPublication[]> {
@@ -85,9 +102,12 @@ export class PostgresPostPublicationsRepository implements PostPublicationsRepos
   async failStalePublishing(cutoff: Date, failedAt: Date): Promise<Array<{tenantId: string; postId: string}>> {
     const result = await this.pool.query<{tenantId: string; postId: string}>(`
       WITH failed AS (
-        UPDATE post_publications SET status='failed', error_code='publication_state_unknown',
+        UPDATE post_publications destination SET status='failed', error_code='publication_state_unknown',
           error_message='Não foi possível confirmar o resultado da publicação.', failed_at=$2, updated_at=$2
-        WHERE status='publishing' AND started_at < $1 RETURNING tenant_id, post_id
+        WHERE status='publishing' AND started_at < $1 AND NOT EXISTS (
+          SELECT 1 FROM publication_operations operation
+          WHERE operation.tenant_id=destination.tenant_id AND operation.publication_id=destination.id
+        ) RETURNING tenant_id, post_id
       ) SELECT DISTINCT tenant_id AS "tenantId", post_id AS "postId" FROM failed
     `, [cutoff, failedAt]);
     return result.rows;
@@ -138,6 +158,13 @@ export class PostgresPostPublicationsRepository implements PostPublicationsRepos
       LIMIT $1
     `, [limit]);
     return result.rows;
+  }
+
+  async findClaimedPublication(tenantId: string, publicationId: string): Promise<ClaimedPublication | null> {
+    const result = await this.pool.query<ClaimedPublication>(`SELECT id,tenant_id AS "tenantId",
+      post_id AS "postId",social_account_id AS "socialAccountId" FROM post_publications
+      WHERE tenant_id=$1 AND id=$2 AND status='publishing'`, [tenantId, publicationId]);
+    return result.rows[0] ?? null;
   }
 
   async refreshPostAggregate(tenantId: string, postId: string, now: Date): Promise<Post> {

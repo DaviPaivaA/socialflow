@@ -25,7 +25,7 @@ function clientWith(fetchImpl: typeof fetch, timeoutMs = 1_000) {
 }
 
 describe("HttpMetaOAuthClient", () => {
-  it("inclui permissão de publicação de Page sem pedir publicação Instagram", () => {
+  it("solicita exatamente os cinco scopes de publicação Meta sem insights", () => {
     const client = clientWith(vi.fn<typeof fetch>());
     const url = new URL(client.buildAuthorizationUrl(state));
 
@@ -39,9 +39,9 @@ describe("HttpMetaOAuthClient", () => {
       "pages_read_engagement",
       "instagram_basic",
       "pages_manage_posts",
+      "instagram_content_publish",
     ]);
     for (const forbidden of [
-      "instagram_content_publish",
       "instagram_manage_insights",
       "instagram_manage_comments",
       "instagram_manage_messages",

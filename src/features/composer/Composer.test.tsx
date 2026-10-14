@@ -20,10 +20,16 @@ const oversized: MediaAsset = { ...image, id: "70000000-0000-4000-8000-000000000
 const pageA: SocialAccount = {
   createdAt: "2026-09-25T12:00:00.000Z", disconnectedAt: null, displayName: "Página A",
   id: "70000000-0000-4000-8000-000000000011", profileImageUrl: null,
-  provider: "facebook", providerAccountId: "page-a", scopes: ["pages_manage_posts"],
+  provider: "facebook", providerAccountId: "page-a", scopes: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"],
   status: "connected", tokenExpiresAt: null, updatedAt: "2026-09-25T12:00:00.000Z", username: null,
 };
 const pageB: SocialAccount = { ...pageA, id: "70000000-0000-4000-8000-000000000012", displayName: "Página B", providerAccountId: "page-b" };
+const instagram: SocialAccount = {
+  ...pageA, id: "70000000-0000-4000-8000-000000000013", provider: "instagram", username: "perfil.a",
+  scopes: ["pages_show_list", "pages_read_engagement", "instagram_basic", "instagram_content_publish"],
+};
+const png: MediaAsset = { ...image, mimeType: "image/png", originalFilename: "arte.png" };
+const mov: MediaAsset = { ...video, mimeType: "video/quicktime", originalFilename: "clipe.mov" };
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -76,7 +82,7 @@ describe("Composer com mídia", () => {
     const onSchedule = renderComposer(source);
     expect(screen.getByText(/carregando biblioteca/i)).toBeInTheDocument();
     expect(screen.getByLabelText("Enviar foto ou vídeo")).toHaveAttribute("accept", "image/jpeg,image/png,image/webp,video/mp4,video/quicktime");
-    await userEvent.click(await screen.findByRole("checkbox", { name: "Página A" }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Facebook — Página A" }));
     expect(screen.getByRole("button", { name: "Publicar agora" })).toBeDisabled();
     pending.resolve([image, video]);
     expect(await screen.findByText("retrato.jpg")).toBeInTheDocument();
@@ -94,7 +100,7 @@ describe("Composer com mídia", () => {
     const source = repository({ list: vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([image]) });
     const onSchedule = renderComposer(source);
     expect(await screen.findByText("Não foi possível carregar sua biblioteca de mídia.")).toBeInTheDocument();
-    await userEvent.click(await screen.findByRole("checkbox", { name: "Página A" }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Facebook — Página A" }));
     expect(screen.getByRole("button", { name: "Publicar agora" })).toBeDisabled();
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /tentar novamente/i }));
@@ -133,7 +139,7 @@ describe("Composer com mídia", () => {
     vi.stubGlobal("URL", Object.assign(class extends URL {}, { createObjectURL, revokeObjectURL }));
     const onSchedule = renderComposer(source);
     await waitFor(() => expect(source.list).toHaveBeenCalledTimes(1));
-    await userEvent.click(await screen.findByRole("checkbox", { name: "Página A" }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Facebook — Página A" }));
     const user = await fillPost();
     expect(screen.getByRole("button", { name: "Publicar agora" })).toBeEnabled();
     const file = new File(["imagem"], "nova.jpg", { type: "image/jpeg" });
@@ -155,8 +161,8 @@ describe("Composer destinos e publicação", () => {
   it("publica agora nas Pages selecionadas sem scheduledFor nem campos do servidor", async () => {
     const onSubmit = renderComposer(repository(), vi.fn(), socialRepository([pageA, pageB]));
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("checkbox", { name: "Página A" }));
-    await user.click(screen.getByRole("checkbox", { name: "Página B" }));
+    await user.click(await screen.findByRole("checkbox", { name: "Facebook — Página A" }));
+    await user.click(screen.getByRole("checkbox", { name: "Facebook — Página B" }));
     await user.type(screen.getByRole("textbox", { name: /legenda/i }), "Post de teste");
     expect(screen.queryByLabelText("Data")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Horário")).not.toBeInTheDocument();
@@ -170,7 +176,7 @@ describe("Composer destinos e publicação", () => {
   it("exige horário no modo agendado e envia ISO somente depois de preenchê-lo", async () => {
     const onSubmit = renderComposer(repository());
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("checkbox", { name: "Página A" }));
+    await user.click(await screen.findByRole("checkbox", { name: "Facebook — Página A" }));
     await user.click(screen.getByRole("radio", { name: "Agendar" }));
     await user.type(screen.getByRole("textbox", { name: /legenda/i }), "Post agendado");
     fireEvent.change(screen.getByLabelText("Data"), { target: { value: "" } });
@@ -195,18 +201,19 @@ describe("Composer destinos e publicação", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("mantém vídeo na prévia mas bloqueia envio com orientação sobre formato", async () => {
+  it("publica vídeo como Reel e avisa sobre audiência pública da Facebook Page", async () => {
     const onSubmit = renderComposer(repository({ list: vi.fn().mockResolvedValue([video]) }));
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("checkbox", { name: "Página A" }));
+    await user.click(await screen.findByRole("checkbox", { name: "Facebook — Página A" }));
     await fillPost();
     expect(screen.getByRole("button", { name: "Publicar agora" })).toBeEnabled();
     await user.click(await screen.findByRole("button", { name: /selecionar clipe.mp4/i }));
     expect(screen.getByTestId("composer-main-preview").querySelector("video")).toBeInTheDocument();
-    expect(screen.getByText(/vídeo.*não.*Facebook/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Publicar agora" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent(/Reel.*Facebook.*públic/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/orientação.*não.*verifica/i);
+    expect(screen.getByRole("button", { name: "Publicar agora" })).toBeEnabled();
     submitGuardedForm();
-    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ mediaAssetIds: [video.id] }));
   });
 
   it.each([
@@ -215,7 +222,7 @@ describe("Composer destinos e publicação", () => {
   ] as const)("mantém %s na prévia mas bloqueia envio incompatível", async (_case, asset, guidance) => {
     const onSubmit = renderComposer(repository({ list: vi.fn().mockResolvedValue([asset]) }));
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("checkbox", { name: "Página A" }));
+    await user.click(await screen.findByRole("checkbox", { name: "Facebook — Página A" }));
     await fillPost();
     expect(screen.getByRole("button", { name: "Publicar agora" })).toBeEnabled();
     await user.click(await screen.findByRole("button", { name: new RegExp(`selecionar ${asset.originalFilename}`, "i") }));
@@ -228,7 +235,7 @@ describe("Composer destinos e publicação", () => {
 
   it("bloqueia novo envio enquanto a publicação está em andamento", async () => {
     const onSubmit = renderComposer(repository(), vi.fn(), socialRepository(), { isSubmitting: true });
-    await userEvent.click(await screen.findByRole("checkbox", { name: "Página A" }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Facebook — Página A" }));
     await fillPost();
     expect(screen.getByRole("button", { name: "Publicar agora" })).toHaveTextContent(/publicando publicação/i);
     expect(screen.getByRole("button", { name: "Publicar agora" })).toBeDisabled();
@@ -240,8 +247,109 @@ describe("Composer destinos e publicação", () => {
     const onDraftChange = vi.fn();
     renderComposer(repository(), vi.fn(), socialRepository(), { onDraftChange });
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("checkbox", { name: "Página A" }));
+    await user.click(await screen.findByRole("checkbox", { name: "Facebook — Página A" }));
     await user.click(screen.getByRole("radio", { name: "Agendar" }));
     expect(onDraftChange).toHaveBeenCalledTimes(2);
+  });
+
+  it("identifica providers, usa fallback Instagram e orienta reconexão sem OAuth", async () => {
+    const accounts = socialRepository([
+      pageA, instagram, { ...instagram, id: "fallback", username: null, displayName: "Perfil sem username" },
+      { ...pageB, scopes: [] },
+    ]);
+    renderComposer(repository(), vi.fn(), accounts);
+    expect(await screen.findByRole("checkbox", { name: "Facebook — Página A" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Instagram — @perfil.a" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Instagram — Perfil sem username" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /Página B/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/reconect.*Canais/i);
+    expect(accounts.startMetaOAuth).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["texto Facebook", [pageA], null, true],
+    ["texto Instagram", [instagram], null, false],
+    ["texto misto", [pageA, instagram], null, false],
+    ["JPEG Facebook", [pageA], image, true],
+    ["JPEG Instagram", [instagram], image, true],
+    ["JPEG misto", [pageA, instagram], image, true],
+    ["PNG Facebook", [pageA], png, true],
+    ["PNG Instagram", [instagram], png, false],
+    ["PNG misto", [pageA, instagram], png, false],
+    ["JPEG 4 MB misto", [pageA, instagram], { ...image, sizeBytes: 4_000_000 }, true],
+    ["JPEG acima de 4 MB Facebook", [pageA], oversized, false],
+    ["JPEG acima de 4 MB Instagram", [instagram], oversized, true],
+    ["JPEG acima de 4 MB misto", [pageA, instagram], oversized, false],
+    ["JPEG 8 MB Instagram", [instagram], { ...image, sizeBytes: 8_000_000 }, true],
+    ["JPEG acima de 8 MB Instagram", [instagram], { ...image, sizeBytes: 8_000_001 }, false],
+    ["WebP Instagram", [instagram], webp, false],
+    ["MP4 Facebook", [pageA], video, true],
+    ["MP4 Instagram", [instagram], video, true],
+    ["MP4 misto", [pageA, instagram], video, true],
+    ["MOV Facebook", [pageA], mov, true],
+    ["MOV Instagram", [instagram], mov, true],
+    ["MOV misto", [pageA, instagram], mov, true],
+    ["MP4 no teto misto", [pageA, instagram], { ...video, sizeBytes: 262_144_000 }, true],
+    ["MP4 acima do teto misto", [pageA, instagram], { ...video, sizeBytes: 262_144_001 }, false],
+  ] as const)("aplica matriz: %s preservando escolhas", async (_case, accounts, asset, valid) => {
+    const onSubmit = renderComposer(repository({ list: vi.fn().mockResolvedValue(asset ? [asset] : []) }), vi.fn(), socialRepository([...accounts]));
+    const user = userEvent.setup();
+    for (const account of accounts) {
+      await user.click(await screen.findByRole("checkbox", {
+        name: account.provider === "facebook" ? "Facebook — Página A" : "Instagram — @perfil.a",
+      }));
+    }
+    await fillPost();
+    if (asset) await user.click(await screen.findByRole("button", { name: `Selecionar ${asset.originalFilename}` }));
+    const button = screen.getByRole("button", { name: "Publicar agora" });
+    if (valid) expect(button).toBeEnabled();
+    else {
+      expect(button).toBeDisabled();
+      expect(screen.getByRole("alert")).toBeInTheDocument();
+    }
+    for (const checkbox of screen.getAllByRole("checkbox")) expect(checkbox).toBeChecked();
+    if (asset) expect(screen.getByRole("button", { name: `Selecionar ${asset.originalFilename}` })).toHaveAttribute("aria-pressed", "true");
+    submitGuardedForm();
+    if (valid) expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      socialAccountIds: accounts.map((account) => account.id), mediaAssetIds: asset ? [asset.id] : [], publicationMode: "now",
+    }));
+    else expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("revalida PNG ao alternar Instagram sem remover a mídia ou outros destinos", async () => {
+    renderComposer(repository({ list: vi.fn().mockResolvedValue([png]) }), vi.fn(), socialRepository([pageA, instagram]));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("checkbox", { name: "Facebook — Página A" }));
+    await fillPost();
+    await user.click(await screen.findByRole("button", { name: "Selecionar arte.png" }));
+    expect(screen.getByRole("button", { name: "Publicar agora" })).toBeEnabled();
+    await user.click(screen.getByRole("checkbox", { name: "Instagram — @perfil.a" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(/Instagram.*JPEG/i);
+    expect(screen.getByRole("button", { name: "Publicar agora" })).toBeDisabled();
+    await user.click(screen.getByRole("checkbox", { name: "Instagram — @perfil.a" }));
+    expect(screen.getByRole("button", { name: "Publicar agora" })).toBeEnabled();
+    expect(screen.getByRole("checkbox", { name: "Facebook — Página A" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Selecionar arte.png" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("agenda Reel misto enviando somente IDs e horário, sem gerar URL ou iniciar OAuth", async () => {
+    const source = repository({ list: vi.fn().mockResolvedValue([mov]) });
+    const accounts = socialRepository([pageA, instagram]);
+    const onSubmit = renderComposer(source, vi.fn(), accounts);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("checkbox", { name: "Facebook — Página A" }));
+    await user.click(screen.getByRole("checkbox", { name: "Instagram — @perfil.a" }));
+    await user.click(screen.getByRole("radio", { name: "Agendar" }));
+    await fillPost();
+    await user.click(await screen.findByRole("button", { name: "Selecionar clipe.mov" }));
+    await user.click(screen.getByRole("button", { name: "Agendar publicação" }));
+    expect(onSubmit).toHaveBeenCalledWith({
+      title: "Post de teste", caption: "Post de teste", mediaAssetIds: [mov.id],
+      publicationMode: "scheduled", socialAccountIds: [pageA.id, instagram.id],
+      scheduledFor: new Date("2027-09-25T14:30:00").toISOString(),
+    });
+    expect(accounts.startMetaOAuth).not.toHaveBeenCalled();
+    expect(source.list).toHaveBeenCalledTimes(1);
+    expect(source.upload).not.toHaveBeenCalled();
   });
 });

@@ -219,7 +219,7 @@ export class MetaOAuthService {
               page.accessToken,
             ),
             displayName: instagram.displayName,
-            metadata: { pageId: page.id },
+            metadata: { pageId: page.id, tasks: page.tasks },
             profileImageUrl: instagram.profileImageUrl,
             provider: "instagram",
             providerAccountId: instagram.id,

@@ -1,10 +1,12 @@
-import { createReadStream } from "node:fs";
-import { open, realpath, stat } from "node:fs/promises";
+import { open, realpath, stat, type FileHandle } from "node:fs/promises";
+import { createReadStream, read } from "node:fs";
+import { MediaRequestError } from "./mediaErrors.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 
 export type ByteRange = { start: number; end: number };
+export type VerifiedMediaHandle = { handle: FileHandle; mimeType: string; sizeBytes: number; close(): Promise<void> };
 export type ByteRangeResult =
   | { kind: "none" }
   | { kind: "range"; range: ByteRange }
@@ -99,12 +101,21 @@ export async function sendMediaContent(
       throw new Error("Não foi possível acessar o conteúdo da mídia.");
     }
 
-    const sizeBytes = details.size;
+    await sendOpenMediaContent(request, response, { handle, mimeType: input.mimeType, sizeBytes: details.size, close: () => handle.close() });
+  } finally { await handle.close(); }
+}
+
+/** The opener owns close(), including HEAD, failures and client cancellation. */
+export async function sendOpenMediaContent(request: IncomingMessage, response: ServerResponse,
+  input: VerifiedMediaHandle, expiresAt?: Date): Promise<void> {
+    if (expiresAt && expiresAt.getTime() <= Date.now()) throw new MediaRequestError(404, "media_asset_not_found", "A mídia não foi encontrada.");
+    const sizeBytes = input.sizeBytes;
     response.setHeader("Accept-Ranges", "bytes");
     response.setHeader("Cache-Control", "private, no-store");
     response.setHeader("Content-Type", input.mimeType);
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Content-Disposition", "inline");
+    response.setHeader("Referrer-Policy", "no-referrer");
 
     if (request.method === "HEAD") {
       response.statusCode = 200;
@@ -127,14 +138,16 @@ export async function sendMediaContent(
     if (range) {
       response.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${sizeBytes}`);
     }
-    const stream = createReadStream(input.path, {
-      fd: handle.fd,
+    const stream = createReadStream("", {
+      fd: input.handle.fd,
       autoClose: false,
+      // Even autoClose:false streams invoke close on explicit destroy/error.
+      // The stream owns its I/O, but the opener alone owns the descriptor.
+      fs: { read, close: (_fd, callback) => { callback(null); } },
       start: range?.start ?? 0,
       end: range?.end ?? sizeBytes - 1,
     });
-    await pipeline(stream, response);
-  } finally {
-    await handle.close();
-  }
+    const timer = expiresAt ? setTimeout(() => stream.destroy(new Error("Prazo da mídia encerrado.")), Math.max(0, expiresAt.getTime() - Date.now())) : undefined;
+    try { await pipeline(stream, response); }
+    finally { if (timer) clearTimeout(timer); }
 }
