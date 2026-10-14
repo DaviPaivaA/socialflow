@@ -81,7 +81,8 @@ describe("criação atômica de posts com Facebook Pages", () => {
     const connectionId = (await pool.query<{ id: string }>(
       `INSERT INTO oauth_connections (tenant_id, platform, external_user_id, access_token_encrypted, scopes, status)
        VALUES ($1, $2, $3, $4, $5::text[], 'active') RETURNING id`,
-      [tenantId, platform, `user-${randomUUID()}`, Buffer.from("encrypted-user-token"), REQUIRED_SCOPES],
+      [tenantId, platform, `user-${randomUUID()}`, Buffer.from("encrypted-user-token"), kind === "instagram_business"
+        ? ["pages_show_list", "pages_read_engagement", "instagram_basic", "instagram_content_publish"] : REQUIRED_SCOPES],
     )).rows[0]!.id;
     const accountId = (await pool.query<{ id: string }>(
       `INSERT INTO social_accounts (tenant_id, oauth_connection_id, account_type, external_account_id, metadata)
@@ -183,7 +184,7 @@ describe("criação atômica de posts com Facebook Pages", () => {
     }
   });
 
-  it.each(["instagram_business", "tiktok_account"] as const)("rejeita destino %s", async (kind) => {
+  it.each(["tiktok_account"] as const)("rejeita destino %s", async (kind) => {
     const context = await tenant();
     const destination = await account(context.tenantId, kind);
     await expect(store.create(context, input([destination.accountId]))).rejects.toMatchObject({ name: "InvalidPostDestinationError" });
@@ -211,7 +212,6 @@ describe("criação atômica de posts com Facebook Pages", () => {
   });
 
   it.each([
-    ["video/mp4", 8],
     ["image/webp", 8],
     ["image/png", 4_000_001],
   ])("rejeita mídia %s com tamanho %i sem apagar o upload", async (mimeType, sizeBytes) => {
@@ -229,5 +229,105 @@ describe("criação atômica de posts com Facebook Pages", () => {
     const imageId = await media(context.tenantId, context.authorUserId, "image/png");
     await expect(store.create(context, input([valid.accountId, randomUUID()], [imageId]))).rejects.toMatchObject({ name: "InvalidPostDestinationError" });
     expect(await counts(context.tenantId)).toEqual({ posts: 0, media: 0, publications: 0 });
+  });
+
+  it.each([
+    ["instagram", "image/jpeg", 8_000_000],
+    ["instagram", "video/mp4", 262_144_000],
+    ["instagram", "video/quicktime", 8],
+    ["mixed", "image/jpeg", 4_000_000],
+    ["mixed", "video/mp4", 262_144_000],
+    ["mixed", "video/quicktime", 8],
+    ["facebook", "video/mp4", 8],
+  ])("persiste %s com %s até %i bytes atomicamente", async (provider, mimeType, sizeBytes) => {
+    const context = await tenant();
+    const ids: string[] = [];
+    if (provider !== "instagram") ids.push((await account(context.tenantId)).accountId);
+    if (provider !== "facebook") ids.push((await account(context.tenantId, "instagram_business")).accountId);
+    const mediaId = await media(context.tenantId, context.authorUserId, mimeType, sizeBytes);
+    const mixedStore = new PostgresPostsStore(pool, { instagramPublishingAvailable: true, maxVideoBytes: 262_144_000 });
+    const result = await mixedStore.create(context, input(ids, [mediaId]));
+    expect(result.post).toMatchObject({ tenantId: context.tenantId, authorUserId: context.authorUserId, mediaAssetIds: [mediaId], status: "scheduled" });
+    expect(result.publications.map(row => row.socialAccountId)).toEqual(ids);
+    expect(result.publications.every(row => row.status === "scheduled")).toBe(true);
+    expect(await counts(context.tenantId)).toEqual({ posts: 1, media: 1, publications: ids.length });
+    expect((await pool.query("SELECT count(*)::int AS count FROM publication_operations WHERE tenant_id = $1", [context.tenantId])).rows[0].count).toBe(0);
+  });
+
+  it.each([
+    ["instagram", null, 8, "Publicação de teste"],
+    ["mixed", null, 8, "Publicação de teste"],
+    ["instagram", "image/png", 8, "Publicação de teste"],
+    ["mixed", "image/png", 8, "Publicação de teste"],
+    ["instagram", "image/webp", 8, "Publicação de teste"],
+    ["instagram", "image/jpeg", 8_000_001, "Publicação de teste"],
+    ["mixed", "image/jpeg", 4_000_001, "Publicação de teste"],
+    ["instagram", "video/mp4", 262_144_001, "Publicação de teste"],
+    ["mixed", "video/quicktime", 262_144_001, "Publicação de teste"],
+    ["instagram", "image/jpeg", 8, "x".repeat(2_201)],
+  ])("rejeita incompatibilidade %s/%s/%i sem Post parcial", async (provider, mimeType, sizeBytes, caption) => {
+    const context = await tenant();
+    const ids = [(await account(context.tenantId, "instagram_business")).accountId];
+    if (provider === "mixed") ids.unshift((await account(context.tenantId)).accountId);
+    const mediaIds = mimeType ? [await media(context.tenantId, context.authorUserId, mimeType, sizeBytes)] : [];
+    const mixedStore = new PostgresPostsStore(pool, { instagramPublishingAvailable: true });
+    await expect(mixedStore.create(context, { ...input(ids, mediaIds), caption })).rejects.toMatchObject({ name: "PostMediaAssetUnsupportedError" });
+    expect(await counts(context.tenantId)).toEqual({ posts: 0, media: 0, publications: 0 });
+  });
+
+  it("aplica o teto de vídeo injetado antes de inserir", async () => {
+    const context = await tenant();
+    const page = await account(context.tenantId);
+    const mediaId = await media(context.tenantId, context.authorUserId, "video/mp4", 101);
+    const limited = new PostgresPostsStore(pool, { maxVideoBytes: 100 });
+    await expect(limited.create(context, input([page.accountId], [mediaId]))).rejects.toMatchObject({ name: "PostMediaAssetUnsupportedError" });
+    expect(await counts(context.tenantId)).toEqual({ posts: 0, media: 0, publications: 0 });
+  });
+
+  it("rejeita Instagram sem capability antes de qualquer INSERT", async () => {
+    const context = await tenant();
+    const instagram = await account(context.tenantId, "instagram_business");
+    const imageId = await media(context.tenantId, context.authorUserId, "image/jpeg");
+    await expect(store.create(context, input([instagram.accountId], [imageId]))).rejects.toMatchObject({ name: "InstagramPublishingUnavailableError" });
+    expect(await counts(context.tenantId)).toEqual({ posts: 0, media: 0, publications: 0 });
+  });
+
+  it.each([
+    ["revogada", "UPDATE oauth_connections SET status = 'revoked', revoked_at = now(), access_token_encrypted = NULL WHERE id = $1"],
+    ["scope ausente", "UPDATE oauth_connections SET scopes = ARRAY['pages_show_list','pages_read_engagement','instagram_basic'] WHERE id = $1"],
+    ["tasks ausentes", "UPDATE social_accounts SET metadata = '{}'::jsonb WHERE id = $1"],
+    ["credencial vencida", "UPDATE social_account_credentials SET access_token_expires_at = now() - interval '1 second' WHERE social_account_id = $1"],
+  ])("rejeita Instagram %s em seleção mista atomicamente", async (_label, statement) => {
+    const context = await tenant();
+    const page = await account(context.tenantId);
+    const instagram = await account(context.tenantId, "instagram_business");
+    await pool.query(statement, [statement.includes("oauth_connections") ? instagram.connectionId : instagram.accountId]);
+    const imageId = await media(context.tenantId, context.authorUserId, "image/jpeg");
+    await expect(new PostgresPostsStore(pool, { instagramPublishingAvailable: true }).create(context, input([page.accountId, instagram.accountId], [imageId])))
+      .rejects.toMatchObject({ name: "InvalidPostDestinationError" });
+    expect(await counts(context.tenantId)).toEqual({ posts: 0, media: 0, publications: 0 });
+  });
+
+  it("aceita MANAGE somente para Instagram e legenda de 2.200 caracteres", async () => {
+    const context = await tenant();
+    const instagram = await account(context.tenantId, "instagram_business");
+    await pool.query("UPDATE social_accounts SET metadata = '{\"tasks\":[\"MANAGE\"]}' WHERE id = $1", [instagram.accountId]);
+    const imageId = await media(context.tenantId, context.authorUserId, "image/jpeg");
+    const result = await new PostgresPostsStore(pool, { instagramPublishingAvailable: true }).create(context, { ...input([instagram.accountId], [imageId]), caption: "x".repeat(2_200) });
+    expect(result.post.caption).toHaveLength(2_200);
+  });
+
+  it("não distingue mídia de outro tenant, apagada ou inexistente para destinos mistos", async () => {
+    const context = await tenant();
+    const other = await tenant();
+    const ids = [(await account(context.tenantId)).accountId, (await account(context.tenantId, "instagram_business")).accountId];
+    const foreign = await media(other.tenantId, other.authorUserId, "image/jpeg");
+    const deleted = await media(context.tenantId, context.authorUserId, "image/jpeg");
+    await pool.query("UPDATE media_assets SET deleted_at = now() WHERE id = $1", [deleted]);
+    const mixedStore = new PostgresPostsStore(pool, { instagramPublishingAvailable: true });
+    for (const mediaId of [foreign, deleted, randomUUID()]) {
+      await expect(mixedStore.create(context, input(ids, [mediaId]))).rejects.toMatchObject({ name: "PostMediaAssetNotFoundError", message: "A mídia não foi encontrada." });
+      expect(await counts(context.tenantId)).toEqual({ posts: 0, media: 0, publications: 0 });
+    }
   });
 });

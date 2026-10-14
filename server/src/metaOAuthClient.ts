@@ -5,6 +5,7 @@ export const META_OAUTH_SCOPES = [
   "pages_read_engagement",
   "instagram_basic",
   "pages_manage_posts",
+  "instagram_content_publish",
 ] as const;
 
 const AUTHORIZATION_ORIGIN = "https://www.facebook.com";

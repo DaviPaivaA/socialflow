@@ -7,20 +7,21 @@ type ComposerDestinationsProps = {
 
 export function ComposerDestinations({ destinations, onToggle }: ComposerDestinationsProps) {
   return <section aria-label="Destinos" className="composer-destinations">
-    <strong>Facebook Pages</strong>
-    {destinations.isLoading ? <p role="status">Carregando Pages conectadas...</p> : null}
+    <strong>Facebook e Instagram</strong>
+    {destinations.isLoading ? <p role="status">Carregando contas conectadas...</p> : null}
     {destinations.error ? <p role="alert">{destinations.error} Abra Canais e tente novamente.</p> : null}
-    {!destinations.isLoading && !destinations.error && destinations.facebookPages.length === 0
-      ? <p>Não há Facebook Pages conectadas. Abra Canais para conectar uma Page.</p>
+    {!destinations.isLoading && !destinations.error && destinations.accounts.length === 0
+      ? <p>Não há contas elegíveis de Facebook ou Instagram. Abra Canais para conectar ou reconectar uma conta.</p>
       : null}
-    {destinations.facebookPages.length > 0 ? <div className="composer-page-list">
-      {destinations.facebookPages.map((page) => <label className="composer-page" key={page.id}>
+    {destinations.reconnectionRequired ? <p role="status">Algumas contas precisam de reconexão ou permissões de publicação. Reconecte em Canais.</p> : null}
+    {destinations.accounts.length > 0 ? <div className="composer-page-list">
+      {destinations.accounts.map((page) => <label className="composer-page" key={page.id}>
         <input
           checked={destinations.selectedIds.includes(page.id)}
           onChange={() => onToggle(page.id)}
           type="checkbox"
         />
-        <span>{page.displayName}</span>
+        <span>{page.provider === "facebook" ? `Facebook — ${page.displayName}` : `Instagram — ${page.username ? `@${page.username}` : page.displayName}`}</span>
       </label>)}
     </div> : null}
   </section>;

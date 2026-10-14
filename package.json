@@ -15,7 +15,7 @@
     "test": "npm run test:frontend && npm run test:server",
     "test:frontend": "vitest run",
     "test:server": "node --env-file-if-exists=.env ./node_modules/vitest/vitest.mjs run --config vitest.server.config.ts",
-    "test:integration": "node --env-file-if-exists=.env ./node_modules/vitest/vitest.mjs run --config vitest.server.config.ts server/test/api.integration.ts server/test/auth.integration.ts server/test/socialAccounts.integration.ts server/test/metaOAuth.integration.ts server/test/mediaAssets.integration.ts server/test/postPublications.integration.ts server/test/postCreation.integration.ts",
+    "test:integration": "node --env-file-if-exists=.env ./node_modules/vitest/vitest.mjs run --config vitest.server.config.ts server/test/api.integration.ts server/test/auth.integration.ts server/test/facebookPublishingService.integration.ts server/test/mediaAssets.integration.ts server/test/metaMediaDelivery.integration.ts server/test/metaOAuth.integration.ts server/test/metaPublicationResume.integration.ts server/test/metaPublicationServices.integration.ts server/test/metaPublishingCredential.integration.ts server/test/postCreation.integration.ts server/test/postPublications.integration.ts server/test/postPublicationsRepository.test.ts server/test/publicationCoordinator.test.ts server/test/publicationOperations.integration.ts server/test/socialAccounts.integration.ts",
     "test:watch": "vitest",
     "build": "npm run build:frontend && npm run build:server",
     "build:frontend": "tsc --noEmit -p tsconfig.app.json && vite build",

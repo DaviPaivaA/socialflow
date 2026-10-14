@@ -7,10 +7,14 @@ import { useComposerDestinations } from "./useComposerDestinations";
 const pageA: SocialAccount = {
   createdAt: "2026-09-25T12:00:00.000Z", disconnectedAt: null, displayName: "Página A",
   id: "70000000-0000-4000-8000-000000000001", profileImageUrl: null,
-  provider: "facebook", providerAccountId: "page-a", scopes: ["pages_manage_posts"],
+  provider: "facebook", providerAccountId: "page-a", scopes: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"],
   status: "connected", tokenExpiresAt: null, updatedAt: "2026-09-25T12:00:00.000Z", username: null,
 };
 const pageB: SocialAccount = { ...pageA, id: "70000000-0000-4000-8000-000000000002", displayName: "Página B", providerAccountId: "page-b" };
+const instagram: SocialAccount = {
+  ...pageA, id: "70000000-0000-4000-8000-000000000003", provider: "instagram", username: "perfil.a",
+  scopes: ["pages_show_list", "pages_read_engagement", "instagram_basic", "instagram_content_publish"],
+};
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -30,20 +34,38 @@ function repository(list: SocialAccountsRepository["list"]): SocialAccountsRepos
 }
 
 describe("useComposerDestinations", () => {
-  it("mostra somente Facebook connected e alterna várias Pages", async () => {
+  it("lista Facebook e Instagram elegíveis e alterna seleção mista", async () => {
     const disconnected = { ...pageA, id: "expired", status: "expired" as const };
-    const instagram = { ...pageA, id: "instagram", provider: "instagram" as const };
     const source = repository(vi.fn().mockResolvedValue([pageA, disconnected, instagram, pageB]));
     const { result } = renderHook(() => useComposerDestinations({ repository: source, workspaceId: "workspace-a" }));
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(source.list).toHaveBeenCalledWith("workspace-a");
-    expect(result.current.facebookPages.map((page) => page.id)).toEqual([pageA.id, pageB.id]);
-    act(() => { result.current.toggle(pageA.id); result.current.toggle(pageB.id); });
-    expect(result.current.selectedIds).toEqual([pageA.id, pageB.id]);
+    expect(result.current.accounts).toEqual([pageA, instagram, pageB]);
+    act(() => { result.current.toggle(pageA.id); result.current.toggle(instagram.id); });
+    expect(result.current.selectedIds).toEqual([pageA.id, instagram.id]);
     act(() => result.current.toggle(pageA.id));
-    expect(result.current.selectedIds).toEqual([pageB.id]);
-    act(() => { result.current.toggle(disconnected.id); result.current.toggle(instagram.id); result.current.toggle("unknown"); });
-    expect(result.current.selectedIds).toEqual([pageB.id]);
+    expect(result.current.selectedIds).toEqual([instagram.id]);
+    act(() => { result.current.toggle(disconnected.id); result.current.toggle("unknown"); });
+    expect(result.current.selectedIds).toEqual([instagram.id]);
+    expect(source.startMetaOAuth).not.toHaveBeenCalled();
+  });
+
+  it("exclui provider, status, scopes e expiração inelegíveis sem iniciar OAuth", async () => {
+    const excluded: SocialAccount[] = [
+      { ...pageA, id: "tiktok", provider: "tiktok" },
+      ...(["expired", "revoked", "pending", "error"] as const).map((status) => ({ ...pageA, id: status, status })),
+      { ...pageA, id: "missing-fb", scopes: ["pages_manage_posts"] },
+      { ...instagram, id: "missing-ig", scopes: ["instagram_basic"] },
+      { ...instagram, id: "expired-token", tokenExpiresAt: "2000-01-01T00:00:00.000Z" },
+      { ...pageA, id: "invalid-expiry", tokenExpiresAt: "invalid" },
+    ];
+    const source = repository(vi.fn().mockResolvedValue([...excluded, instagram, pageA]));
+    const { result } = renderHook(() => useComposerDestinations({ repository: source, workspaceId: "workspace-a" }));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.accounts).toEqual([instagram, pageA]);
+    expect(result.current.reconnectionRequired).toBe(true);
+    act(() => excluded.forEach((account) => result.current.toggle(account.id)));
+    expect(result.current.selectedIds).toEqual([]);
     expect(source.startMetaOAuth).not.toHaveBeenCalled();
   });
 
@@ -57,16 +79,16 @@ describe("useComposerDestinations", () => {
     );
     await waitFor(() => expect(source.list).toHaveBeenCalledTimes(1));
     rerender({ workspaceId: "workspace-b" });
-    expect(result.current.facebookPages).toEqual([]);
+    expect(result.current.accounts).toEqual([]);
     expect(result.current.selectedIds).toEqual([]);
     expect(result.current.isLoading).toBe(true);
     act(() => result.current.toggle(pageA.id));
     expect(result.current.selectedIds).toEqual([]);
     await waitFor(() => expect(source.list).toHaveBeenCalledWith("workspace-b"));
     await act(async () => oldList.resolve([pageA]));
-    expect(result.current.facebookPages).toEqual([]);
+    expect(result.current.accounts).toEqual([]);
     await act(async () => newList.resolve([pageB]));
-    expect(result.current.facebookPages.map((page) => page.id)).toEqual([pageB.id]);
+    expect(result.current.accounts).toEqual([pageB]);
   });
 
   it("limpa seleção sincronamente após trocar de Workspace com Pages já carregadas", async () => {
@@ -75,11 +97,11 @@ describe("useComposerDestinations", () => {
       ({ workspaceId }) => useComposerDestinations({ repository: source, workspaceId }),
       { initialProps: { workspaceId: "workspace-a" } },
     );
-    await waitFor(() => expect(result.current.facebookPages).toHaveLength(1));
+    await waitFor(() => expect(result.current.accounts).toHaveLength(1));
     act(() => result.current.toggle(pageA.id));
     expect(result.current.selectedIds).toEqual([pageA.id]);
     rerender({ workspaceId: "workspace-b" });
-    expect(result.current.facebookPages).toEqual([]);
+    expect(result.current.accounts).toEqual([]);
     expect(result.current.selectedIds).toEqual([]);
   });
 
@@ -92,10 +114,10 @@ describe("useComposerDestinations", () => {
     );
     await waitFor(() => expect(source.list).toHaveBeenCalledTimes(1));
     rerender({ workspaceId: "workspace-b" });
-    await waitFor(() => expect(result.current.facebookPages.map((page) => page.id)).toEqual([pageB.id]));
+    await waitFor(() => expect(result.current.accounts).toEqual([pageB]));
     await act(async () => oldList.reject(new Error("old failure")));
     expect(result.current.error).toBeNull();
-    expect(result.current.facebookPages.map((page) => page.id)).toEqual([pageB.id]);
+    expect(result.current.accounts).toEqual([pageB]);
   });
 
   it("expõe falha atual e limpa Pages e seleção previamente carregadas", async () => {
@@ -105,19 +127,19 @@ describe("useComposerDestinations", () => {
       ({ source }) => useComposerDestinations({ repository: source, workspaceId: "workspace-a" }),
       { initialProps: { source: first } },
     );
-    await waitFor(() => expect(result.current.facebookPages).toHaveLength(1));
+    await waitFor(() => expect(result.current.accounts).toHaveLength(1));
     act(() => result.current.toggle(pageA.id));
     rerender({ source: failed });
     await waitFor(() => expect(result.current.error).toBeTruthy());
-    expect(result.current.facebookPages).toEqual([]);
+    expect(result.current.accounts).toEqual([]);
     expect(result.current.selectedIds).toEqual([]);
   });
 
   it("não introduz token no estado exposto mesmo se a fonte trouxer campo extra", async () => {
     const source = repository(vi.fn().mockResolvedValue([{ ...pageA, accessToken: "secret" }]));
     const { result } = renderHook(() => useComposerDestinations({ repository: source, workspaceId: "workspace-a" }));
-    await waitFor(() => expect(result.current.facebookPages).toHaveLength(1));
-    expect(result.current.facebookPages[0]).not.toHaveProperty("accessToken");
+    await waitFor(() => expect(result.current.accounts).toHaveLength(1));
+    expect(result.current.accounts[0]).not.toHaveProperty("accessToken");
     expect(result.current).not.toHaveProperty("accessToken");
     expect(source.startMetaOAuth).not.toHaveBeenCalled();
   });

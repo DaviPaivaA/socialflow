@@ -11,6 +11,8 @@ no GitHub Pages.
 - criação e agendamento de publicações em memória ou PostgreSQL local;
 - publicação real de texto ou texto com uma imagem em uma ou várias Facebook Pages
   conectadas, imediatamente ou no horário agendado;
+- Facebook Reels e Instagram Professional (JPEG ou Reel), inclusive destinos
+  mistos, com operações persistidas e retomada segura após reinício;
 - cadastro, login e logout com sessão persistida no PostgreSQL;
 - listagem e troca explícita de Workspace para usuários com múltiplos memberships;
 - isolamento de publicações pelo tenant autenticado;
@@ -255,6 +257,166 @@ na configuração existente do proxy, preservando os headers e regras atuais.
 `authorUserId` nunca são aceitos como autoridade do cliente: são derivados do
 membership guardado na sessão e novamente validados pela store.
 
+### Publicação Meta e retomada — Etapa 6E
+
+A 6E amplia a 6D: o Composer permite Facebook Pages e Instagram Professional
+vinculado à Page, publicação imediata/agendada e destinos mistos. Continua
+aceitando zero ou uma mídia por Post; Instagram exige uma. Carousel, Stories,
+TikTok, transcoding e Analytics não fazem parte desta etapa.
+
+| Mídia | Facebook | Instagram | Destinos mistos |
+| --- | --- | --- | --- |
+| Sem mídia | Texto | Não permitido | Não permitido |
+| JPEG até 4.000.000 bytes | Foto | Imagem | Permitido |
+| JPEG acima de 4.000.000 até 8.000.000 bytes | Não permitido | Imagem | Não permitido |
+| PNG até 4.000.000 bytes | Foto | Não permitido: somente JPEG | Não permitido |
+| WebP | Não permitido | Não permitido | Não permitido |
+| MP4/MOV até o teto local | Reel | Reel | Permitido, sujeito ao formato aceito pela Meta |
+
+O teto de vídeo é `min(MEDIA_MAX_VIDEO_BYTES, 262144000)` bytes (250 MiB).
+Upload/preview continuam com os limites próprios da biblioteca; uma mídia
+aceita no upload não é necessariamente publicável. Não há conversão implícita
+de PNG/WebP para JPEG. A legenda Instagram tem limite backend de 2.200
+caracteres; o Composer mantém seu limite de 500. A interface mostra
+incompatibilidades sem remover destinos ou mídia selecionados. Reel em uma
+Facebook Page tem audiência pública; não há controles fictícios de privacidade.
+
+A validação local cobre assinatura/MIME, tamanho, integridade, vínculo e tenant,
+não codec, duração, FPS, resolução, proporção ou cor. Para vídeo destinado aos
+dois providers, prefira H.264/AAC, 9:16, 3–90 s e 24–60 FPS: isso é orientação,
+nunca garantia de aceitação. Instagram JPEG também está sujeito aos requisitos
+de proporção/largura/sRGB da Meta. Rejeições do provider viram erros seguros.
+
+No agendamento, apenas o SocialFlow decide o início: nenhum container é criado
+antes do horário e nenhum scheduling é delegado à Meta. Facebook Reel usa
+start → upload privado em stream → finish `PUBLISHED` → confirmação de status.
+Instagram usa URL temporária para imagem/vídeo → container → status
+`FINISHED` → `media_publish`. Upload/container criado não significa publicado.
+
+`POST /posts` continua retornando `201` com `{post, publications}`. A tentativa
+imediata tem budget de resposta de 5 s; pode retornar `publishing` ou destinos
+ainda `scheduled`, sem cancelar o trabalho nem afirmar sucesso. Cada destino
+conclui independentemente; `GET /posts` após recarregar mostra o agregado
+atualizado pelo scheduler. A UI não faz polling de progresso nesta etapa.
+
+Checkpoints/intenções ficam no PostgreSQL antes de cada mutação externa. O
+scheduler existente (tick aproximado de 15 s, até duas ações em voo por processo)
+retoma passos seguros/status do mesmo ID após restart. Não repete start,
+upload, finish ou publish de resultado incerto. Não há retry automático/manual
+de publicação nem garantia de exactly-once entre Meta e PostgreSQL. Falta de
+confirmação pode terminar em `failed`/`publication_state_unknown`, mesmo que a
+Meta tenha publicado: não reenviar cegamente. No Instagram, `PUBLISHED` pode
+confirmar sucesso com `providerPostId: null` se o ID final original foi perdido;
+container ID não é inventado como ID final.
+
+Consultas de status usam intervalo fixo de 60 s, no máximo 30 reservas e prazo
+absoluto de 30 min desde a preparação. Não há suporte a `Retry-After` nesta
+versão. São limites operacionais locais, não SLA Meta: o guia Instagram
+recomenda um minuto por até cinco minutos. Intenções sem checkpoint confiável
+mantêm a reconciliação conservadora de dez minutos. Desconexão/expiração após
+tentativa ambígua não prova ausência de publicação e não autoriza reenvio.
+
+As fontes oficiais consultadas em 05/10/2026 são inconsistentes: o
+[guia Instagram](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-facebook-login/content-publishing/)
+informa 100 publicações/24 h, mas a
+[referência media_publish](https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-user/media_publish/)
+informa 50/24 h. O
+[guia Facebook Reels](https://developers.facebook.com/docs/video-api/guides/reels-publishing/)
+informa 30/24 h. O SocialFlow não codifica quota conflitante nem promete essa
+capacidade; rate limit vira erro seguro sem retry de mutação. Containers IG
+expiram em 24 h e a referência limita sua criação a 400/24 h; o limite local de
+30 min é independente. A versão Graph continua configurável em
+`META_GRAPH_API_VERSION` (padrão `v26.0`), não copiada de exemplos antigos.
+
+#### Credenciais, scopes e reconexão
+
+OAuth solicita a união `pages_show_list`, `pages_read_engagement`,
+`pages_manage_posts`, `instagram_basic`, `instagram_content_publish`. Facebook
+exige os três `pages_*` e task `CREATE_CONTENT`; Instagram exige os dois scopes
+de Pages de leitura, os dois de Instagram e task `CREATE_CONTENT` ou `MANAGE`
+na Page vinculada. Reconecte as contas Meta antigas em Canais para conceder o
+scope novo e atualizar tasks/credenciais; não inferimos tasks a partir de scopes.
+O frontend filtra scopes/expiração públicos, mas a autoridade é o backend, que
+revalida autor ativo, membership e credencial da conta do mesmo Workspace.
+
+Este fluxo continua **Instagram API with Facebook Login**, sem suporte a
+contas pessoais ou troca para Instagram Login. Usa a credencial **Page access
+token** persistida para Facebook/Instagram; algumas referências de endpoints
+ainda mencionam User token, enquanto o guia de Facebook Login indica Page token.
+Não há fallback automático para outro usuário/token. Papéis especiais obtidos
+via Business Manager podem exigir `ads_management`/`ads_read`: esses scopes não
+são solicitados e esse cenário não é garantido. PPA, 2FA, App Review e níveis de
+acesso continuam pré-requisitos externos quando exigidos. Valide o app real
+antes de produção; testes com clients controlados não equivalem a smoke Meta.
+
+#### Capability de mídia e deploy
+
+Configure somente no backend os três nomes novos:
+
+```bash
+META_MEDIA_PUBLIC_ORIGIN=https://media.example.com
+META_MEDIA_SIGNING_KEY=<chave-base64-exclusiva-de-32-bytes>
+META_MEDIA_URL_TTL_SECONDS=3600
+```
+
+Origem e chave são opcionais **juntas**. Sem ambas, Facebook segue disponível,
+mas criar destino Instagram retorna `503 instagram_publishing_unavailable`
+antes de persistir Post. Configuração parcial/inválida interrompe startup;
+habilitar exige também OAuth Meta configurado. TTL padrão 3600 s, permitido
+1800–7200. Gere outra chave aleatória, separadamente da chave de tokens:
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+```
+
+Guarde o resultado somente em `META_MEDIA_SIGNING_KEY` no ambiente privado.
+Nunca reutilize `SOCIAL_TOKEN_ENCRYPTION_KEY`, App Secret ou senha, nem inclua a
+chave em Git, logs, screenshots ou variável `VITE_`. Não há derivação/fallback
+de segredo. Preserve a chave para operações em andamento; trocar a chave
+invalida capabilities anteriores e não recria containers automaticamente.
+
+A origem deve ser HTTPS pública e conter somente scheme/host/porta, sem
+path/query/fragmento/credenciais. Não é derivada de `Host`/headers de proxy.
+Loopback HTTP é permitido somente com ambiente explícito de desenvolvimento ou
+teste. Em produção, DNS/TLS e alcance externo real devem ser verificados pelo
+operador; a validação de hostname não comprova isso.
+
+`GET/HEAD /media-assets/:id/content` permanece privado, autenticado, para
+preview. A Meta recebe server-side somente
+`GET/HEAD /meta-media/:assetId?ticket=...`, assinada por HMAC-SHA-256 e vinculada
+ao asset, publicação e prazo persistidos. Quem obtiver a URL pode ler **aquela
+mídia** durante sua validade: é bearer capability, não prova da identidade/IP da
+Meta, nem autorização single-use. HEAD, vários GET e Range são permitidos sem
+renovar o TTL. Não há endpoint público de emissão e a URL não entra em DTO,
+storage do browser ou logs. Não exponha o diretório de mídia como raiz estática.
+
+A entrega valida operação/destino/mídia/autor/credencial por tenant, arquivo
+regular/caminho real e hash no mesmo handle; transmite sem carregar vídeo inteiro
+em RAM, com contrapressão, `private, no-store`, `nosniff` e `no-referrer`. GET
+aceita um range único (200/206/416); HEAD não envia corpo. Preparação tem limite
+de 300 s, handles fecham em conclusão/erro/cancelamento/HEAD e expiração encerra
+o stream. Revogar/terminalizar impede novas leituras, mas não revoga
+instantaneamente downloads já abertos antes do vencimento. O storage deve ser
+persistente e protegido de alterações concorrentes externas.
+
+Exponha `/meta-media/` pelo proxy HTTPS até a API, sem login/cookie obrigatório,
+cache público ou redirects para storage. **Redija/remova a query e `ticket` nos
+access/error logs do proxy/CDN/APM**, sem refletir URLs completas; não registre
+Authorization, tokens, App Secret ou payload bruto Meta. Não foi modificada
+infraestrutura real nesta etapa. Streaming/range/timeouts do proxy e banda devem
+ser validados: 250 MiB a 1 Mbit/s levam cerca de 35 min só de transferência,
+mais que o prazo local de 30 min. TTL maior não amplia o prazo de processamento
+nem garante fetch/publicação. Não há transcoding/ffmpeg para corrigir arquivo.
+
+Antes de iniciar a API 6E, faça backup/revisão e aplique a migration única
+`011_add_publication_operations.sql`, após a `010`. Ela cria checkpoints/leases
+privados com FKs compostas por tenant e índices de retomada, sem backfill de
+histórico terminal nem alteração das migrations 001–010; nenhuma 012 é necessária.
+Reconstrua frontend/backend, configure origem/chave/TTL e reconecte Meta.
+Smoke real de JPEG/Reel em cada provider, misto, agendamento, restart e fetch
+externo exige revisão humana e consentimento explícito de publicação. Fixtures
+locais não aprovam acesso, banda, codecs, quotas ou permissões do app real.
+
 ## Autenticação e sessão
 
 Senhas são transformadas com Argon2id pelo pacote `argon2`; somente o PHC hash
@@ -490,13 +652,13 @@ A autorização solicita somente:
 - `pages_show_list`;
 - `pages_read_engagement`;
 - `instagram_basic`;
-- `pages_manage_posts`.
+- `pages_manage_posts`;
+- `instagram_content_publish` (adicionado na 6E).
 
-Após implantar a 6D, reconecte as contas Meta conectadas antes da implantação
-para conceder `pages_manage_posts` e atualizar as credenciais e permissões
-persistidas. Confirme que as Facebook Pages aparecem como conectadas antes de
-publicar. Sem essa permissão e a task `CREATE_CONTENT` da Page, a 6D rejeita a
-Page como destino. `instagram_content_publish` ainda não é solicitada;
+Após implantar a 6E, reconecte as contas Meta antigas para conceder
+`pages_manage_posts`/`instagram_content_publish` conforme o destino e atualizar
+credenciais, permissões e tasks persistidas. Sem permissão/task adequada, o
+backend rejeita o destino. Veja as regras de Facebook/Instagram na seção 6E;
 permissões de insights/Analytics ficam para a Etapa 7. O backend
 consulta `/me/permissions` e não assume que tudo foi concedido. Sem
 `pages_show_list`, a conexão falha; sem as permissões necessárias ao Instagram,
@@ -557,7 +719,9 @@ conta social. Também adiciona índices para localizar publicações vencidas e
 reconciliar status; se necessário, adiciona a chave composta compatível em
 `social_accounts`. As migrations `008` e `009` permanecem inalteradas. Aplique
 a `010` antes de iniciar a API 6D; depois de reconstruir frontend e backend,
-reconecte as contas Meta existentes conforme indicado acima. Para aplicar as
+reconecte as contas Meta existentes conforme indicado acima. A 6E requer também
+a migration `011` descrita na seção de capability; aplique-a antes da API 6E.
+Para aplicar as
 migrations, execute:
 
 ```bash
@@ -594,8 +758,17 @@ cobertura:
 npm run test:integration
 ```
 
+O script explícito de integração inclui todos os 15 arquivos PostgreSQL,
+inclusive `facebookPublishingService.integration.ts`, os novos integrations 6E
+e `postPublicationsRepository.test.ts`/`publicationCoordinator.test.ts`. Cobre
+claims/leases, crashes/retomada sem reenvio, capabilities/range/isolamento e
+migration fresh/upgrade 010→011/segunda execução do runner em schemas próprios.
+
 Sem `TEST_DATABASE_URL`, os testes do frontend e do contrato do backend rodam
 normalmente e a integração PostgreSQL é explicitamente marcada como ignorada.
+**Skips não constituem aprovação de regressão/deploy**: os gates exigem banco
+`_test` distinto da produção e todos os testes PostgreSQL realmente executados,
+zero skips. Nunca execute migrations de teste com `DATABASE_URL` de produção.
 
 ## Pendências conhecidas
 

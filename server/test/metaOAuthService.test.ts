@@ -123,7 +123,7 @@ function fakeSocialRepository(
     assertContext: vi.fn(),
     disconnect: vi.fn(),
     findById: vi.fn(),
-    findFacebookPublishingCredential: vi.fn(),
+    findMetaPublishingCredential: vi.fn(),
     list: vi.fn(),
     register: vi.fn(),
     update: vi.fn(),
@@ -212,6 +212,11 @@ describe("MetaOAuthService", () => {
       "instagram",
     ]);
     expect(persisted?.unverifiedInstagramAccountIds).toEqual([]);
+    expect(persisted?.accounts[0]?.metadata).toEqual({ tasks: ["ANALYZE"] });
+    expect(persisted?.accounts[1]?.metadata).toEqual({
+      pageId: "1001",
+      tasks: ["ANALYZE"],
+    });
     expect(cipher.decryptSecret(persisted!.userAccessTokenEncrypted)).toBe(
       "long-user-token",
     );
@@ -231,6 +236,8 @@ describe("MetaOAuthService", () => {
         { name: "pages_show_list", status: "granted" },
         { name: "pages_read_engagement", status: "granted" },
         { name: "instagram_basic", status: "declined" },
+        { name: "instagram_content_publish", status: "declined" },
+        { name: "pages_manage_posts", status: "expired" },
       ]),
     });
     const service = new MetaOAuthService(
@@ -251,6 +258,10 @@ describe("MetaOAuthService", () => {
     expect(persisted?.accounts).toHaveLength(1);
     expect(persisted?.accounts[0]?.provider).toBe("facebook");
     expect(persisted?.unverifiedInstagramAccountIds).toEqual(["2001"]);
+    expect(persisted?.grantedScopes).toEqual([
+      "pages_show_list",
+      "pages_read_engagement",
+    ]);
   });
 
   it("preserva a Page quando o enriquecimento opcional do Instagram falha", async () => {

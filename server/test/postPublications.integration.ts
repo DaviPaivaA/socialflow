@@ -28,7 +28,7 @@ describe("post_publications com PostgreSQL real", () => {
     return;
   }
 
-  it("instala a migration 010 idempotentemente e preserva as nove anteriores", async () => {
+  it("instala as migrations até 011 idempotentemente e preserva as anteriores", async () => {
     const databaseUrl = testDatabaseUrl();
     const schema = `socialflow_test_${randomUUID().replaceAll("-", "")}`;
     const admin = new Pool({ connectionString: databaseUrl });
@@ -49,6 +49,7 @@ describe("post_publications com PostgreSQL real", () => {
         "008_add_media_assets.sql",
         "009_add_post_media.sql",
         "010_add_post_publications.sql",
+        "011_add_publication_operations.sql",
       ]);
 
       const columns = await pool.query<{ column_name: string; data_type: string; is_nullable: string; column_default: string | null }>(`

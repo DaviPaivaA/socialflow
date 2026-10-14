@@ -17,6 +17,7 @@ import { AuthenticatedPostsContextResolver } from "./postsContext.ts";
 import {
   InvalidPostDestinationError,
   InvalidPostsContextError,
+  InstagramPublishingUnavailableError,
   PostMediaAssetNotFoundError,
   PostMediaAssetUnsupportedError,
   PostgresPostsStore,
@@ -56,9 +57,15 @@ import { resolveClientAddress } from "./clientAddress.ts";
 import { MediaAssetsService } from "./mediaAssetsService.ts";
 import { PostgresMediaAssetsRepository } from "./mediaAssetsRepository.ts";
 import { MediaContentUnavailableError, MediaRequestError } from "./mediaErrors.ts";
-import { sendMediaContent } from "./mediaContent.ts";
+import { sendMediaContent, sendOpenMediaContent } from "./mediaContent.ts";
+import { MetaMediaSigner, type MetaMediaConfig } from "./metaMediaSigner.ts";
+import { MetaMediaDeliveryService } from "./metaMediaDeliveryService.ts";
+import { PostgresPublicationOperationsRepository } from "./publicationOperationsRepository.ts";
 import type { MediaLimits } from "./mediaStorage.ts";
 import { FacebookPublishingService } from "./facebookPublishingService.ts";
+import { InstagramPublishingService } from "./instagramPublishingService.ts";
+import { MetaPublishingDispatcher } from "./publishingService.ts";
+import { PublicationError } from "./publicationErrors.ts";
 import { HttpMetaPublishingClient, MetaPublishingClientError, type MetaPublishingProviderClient } from "./metaPublishingClient.ts";
 import { PostgresPostPublicationsRepository } from "./postPublicationsRepository.ts";
 import { PublicationCoordinator } from "./publicationCoordinator.ts";
@@ -75,6 +82,7 @@ type ApiServerOptions = {
   corsOrigin: string;
   logger?: ApiLogger;
   metaOAuth?: MetaOAuthConfig;
+  metaMedia?: MetaMediaConfig;
   metaOAuthClient?: MetaOAuthProviderClient;
   metaPublishingClient?: MetaPublishingProviderClient;
   publicationSchedulerOptions?: Omit<PublicationSchedulerOptions, "coordinator" | "logger">;
@@ -264,6 +272,7 @@ export function createApiServer({
   corsOrigin,
   logger = console,
   metaOAuth = DISABLED_META_OAUTH_CONFIG,
+  metaMedia = null,
   metaOAuthClient,
   metaPublishingClient,
   publicationSchedulerOptions,
@@ -278,13 +287,20 @@ export function createApiServer({
   const authService = new PostgresAuthService(pool, sessionTtlSeconds);
   const authRateLimiter = new InMemoryRateLimiter(authRateLimit);
   const postsContextResolver = new AuthenticatedPostsContextResolver(authService);
-  const postsStore = new PostgresPostsStore(pool);
+  const postsStore = new PostgresPostsStore(pool, {
+    maxVideoBytes: mediaLimits.videoBytes,
+    instagramPublishingAvailable: metaMedia !== null,
+  });
   const mediaAssetsService = new MediaAssetsService(
     new PostgresMediaAssetsRepository(pool),
     mediaStoragePath,
     mediaLimits,
   );
   const socialAccountsRepository = new PostgresSocialAccountsRepository(pool);
+  const publicationOperations = new PostgresPublicationOperationsRepository(pool);
+  const metaMediaSigner = metaMedia ? new MetaMediaSigner(metaMedia) : null;
+  const mediaDelivery = metaMediaSigner ? new MetaMediaDeliveryService(metaMediaSigner,
+    publicationOperations, socialAccountsRepository, mediaAssetsService) : null;
   const socialAccountsService = new SocialAccountsService(
     socialAccountsRepository,
     socialTokenCipher,
@@ -302,7 +318,7 @@ export function createApiServer({
     socialTokenCipher,
   );
 
-  const publicationRepository = new PostgresPostPublicationsRepository(pool);
+  const publicationRepository = new PostgresPostPublicationsRepository(pool, metaOAuth.graphApiVersion);
   let publishingProvider = metaPublishingClient;
   if (!publishingProvider && metaOAuth.enabled) {
     requireEnabledMetaOAuthConfig(metaOAuth);
@@ -312,12 +328,33 @@ export function createApiServer({
   publishingProvider ??= {
     publishText: async () => { throw new MetaPublishingClientError("meta_provider_error", "publish_text"); },
     publishPhoto: async () => { throw new MetaPublishingClientError("meta_provider_error", "publish_photo"); },
+    createInstagramContainer: async () => { throw new MetaPublishingClientError("meta_provider_error", "create_instagram_container"); },
+    getInstagramContainerStatus: async () => { throw new MetaPublishingClientError("meta_provider_error", "get_instagram_container_status"); },
+    publishInstagramContainer: async () => { throw new MetaPublishingClientError("meta_provider_error", "publish_instagram_container"); },
+    startFacebookReel: async () => { throw new MetaPublishingClientError("meta_provider_error", "start_facebook_reel"); },
+    uploadFacebookReel: async () => { throw new MetaPublishingClientError("meta_provider_error", "upload_facebook_reel"); },
+    getFacebookReelStatus: async () => { throw new MetaPublishingClientError("meta_provider_error", "get_facebook_reel_status"); },
+    finishFacebookReel: async () => { throw new MetaPublishingClientError("meta_provider_error", "finish_facebook_reel"); },
   };
-  const publishingService = new FacebookPublishingService(
+  const facebookPublishingService = new FacebookPublishingService(
     publicationRepository, socialAccountsRepository, socialTokenCipher,
-    mediaAssetsService, publishingProvider,
+    mediaAssetsService, publishingProvider, undefined, publicationOperations,
   );
-  const publicationCoordinator = new PublicationCoordinator(publicationRepository, publishingService);
+  const publishingDependencies = { repository: publicationRepository, accounts: socialAccountsRepository,
+    cipher: socialTokenCipher, media: mediaAssetsService, client: publishingProvider, operations: publicationOperations };
+  const instagramPublishingService = metaMediaSigner && metaMedia
+    ? new InstagramPublishingService({ ...publishingDependencies, signer: metaMediaSigner, config: metaMedia })
+    : { advance: async ({ operation }: import("./publishingService.ts").PublishingStep) => {
+      // Existing operations can outlive capability configuration; never emit an unusable URL.
+      const unknown = operation?.stage === "creating" || operation?.stage === "publishing" || operation?.stage === "verifying";
+      const error = new PublicationError(unknown ? "publication_state_unknown" : "media_unavailable");
+      if (!operation) throw error;
+      await publicationOperations.complete({ lease: operation, now: new Date(),
+        result: { status: "failed", code: error.code, message: error.message, unknown } });
+    } };
+  const publishingService = new MetaPublishingDispatcher(publishingDependencies,
+    { facebook: facebookPublishingService, instagram: instagramPublishingService }, publicationOperations);
+  const publicationCoordinator = new PublicationCoordinator(publicationRepository, publishingService, { operations: publicationOperations });
   const publicationScheduler = new PublicationScheduler({
     coordinator: publicationCoordinator,
     logger,
@@ -325,11 +362,38 @@ export function createApiServer({
   });
 
   const server = createServer(async (request, response) => {
-    writeCorsHeaders(request, response, corsOrigin);
-
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
       const method = request.method ?? "GET";
+      const metaMediaMatch = /^\/meta-media\/([^/]+)$/.exec(url.pathname);
+      if (metaMediaMatch) {
+        response.setHeader("Cache-Control", "private, no-store");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.setHeader("Referrer-Policy", "no-referrer");
+        if (method !== "GET" && method !== "HEAD") {
+          response.setHeader("Allow", "GET, HEAD");
+          throw new RequestError(405, "method_not_allowed", "Método não permitido para este recurso.");
+        }
+        const query = [...url.searchParams];
+        if (!mediaDelivery || query.length !== 1 || query[0][0] !== "ticket") throw new MediaRequestError(404, "media_asset_not_found", "A mídia não foi encontrada.");
+        const controller = new AbortController();
+        const onClose = () => { controller.abort(); };
+        response.once("close", onClose);
+        let content: Awaited<ReturnType<MetaMediaDeliveryService["open"]>> | undefined;
+        try {
+          content = await mediaDelivery.open(metaMediaMatch[1], query[0][1], new Date(), controller.signal);
+          if (controller.signal.aborted) return;
+          const claims = metaMediaSigner!.verify(metaMediaMatch[1], query[0][1], new Date());
+          if (!claims) throw new MediaRequestError(404, "media_asset_not_found", "A mídia não foi encontrada.");
+          await sendOpenMediaContent(request, response, content, new Date(claims.expiresAt * 1000));
+        } catch (error) {
+          if (response.headersSent || response.destroyed) { response.destroy(); return; }
+          if (error instanceof MediaRequestError) throw error;
+          throw new MediaContentUnavailableError();
+        } finally { response.off("close", onClose); await content?.close(); }
+        return;
+      }
+      writeCorsHeaders(request, response, corsOrigin);
       const isMetaCallback =
         url.pathname === "/auth/meta/callback" && method === "GET";
       if (url.pathname.startsWith("/auth/")) {
@@ -766,6 +830,13 @@ export function createApiServer({
         return;
       }
 
+      if (error instanceof InstagramPublishingUnavailableError) {
+        sendJson(response, 503, {
+          error: { code: "instagram_publishing_unavailable", message: error.message },
+        });
+        return;
+      }
+
       if (error instanceof PostMediaAssetUnsupportedError) {
         sendJson(response, 400, {
           error: { code: "unsupported_post_media", message: error.message },
@@ -850,7 +921,8 @@ export function createApiServer({
         return;
       }
 
-      logger.error("Erro interno ao processar a requisição.", error);
+      // Capability requests must never put query, storage paths or raw errors in logs.
+      logger.error("Erro interno ao processar a requisição.", request.url?.startsWith("/meta-media/") ? { name: "MediaDeliveryError" } : error);
       sendJson(response, 500, {
         error: {
           code: "internal_error",

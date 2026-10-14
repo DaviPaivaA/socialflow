@@ -28,6 +28,25 @@ function setup(overrides: {
 }
 
 describe("PublicationScheduler", () => {
+  it("includes coordinator actions in whenIdle and stops acquisition during an active tick", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let stopped = false; let drained = false; let emitted = false;
+    const scheduler = new PublicationScheduler({ coordinator: {
+      failStale: async () => { await pending; },
+      publishDueBatch: async () => { if (!stopped) emitted = true; },
+      stop: () => { stopped = true; },
+      whenIdle: async () => { await pending; drained = true; },
+    } });
+    const tick = scheduler.tick();
+    scheduler.stop();
+    const idle = scheduler.whenIdle();
+    release(); await tick; await idle;
+    expect(stopped).toBe(true);
+    expect(emitted).toBe(false);
+    expect(drained).toBe(true);
+  });
+
   it("starts an immediate tick and schedules ticks every 15 seconds", async () => {
     const { scheduler, setInterval, failStale } = setup();
     scheduler.start();

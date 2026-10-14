@@ -87,7 +87,9 @@ describe("HttpMetaPublishingClient errors", () => {
         init!.signal!.addEventListener("abort", () => reject(new Error(input.accessToken)), { once: true });
       });
       if (phase === "fetch") return stall();
-      return { status: 200, ok: true, json: stall } as Response;
+      return new Response(new ReadableStream({ start(controller) {
+        init!.signal!.addEventListener("abort", () => controller.error(new Error(input.accessToken)), { once: true });
+      } }));
     });
     const pending = new HttpMetaPublishingClient(config, { fetchImpl, timeoutMs: 10 }).publishText(input).catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(10);

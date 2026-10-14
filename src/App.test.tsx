@@ -74,12 +74,12 @@ function createResult(post: Post, states: Array<"scheduled" | "publishing" | "pu
 }
 
 async function selectComposerPage(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByRole("checkbox", { name: "Café Aurora" }));
+  await user.click(await screen.findByRole("checkbox", { name: "Facebook — Café Aurora" }));
 }
 
 async function scheduledSubmitButton() {
   await act(async () => { await Promise.resolve(); });
-  const page = screen.getByRole("checkbox", { name: "Café Aurora" });
+  const page = screen.getByRole("checkbox", { name: "Facebook — Café Aurora" });
   if (!(page as HTMLInputElement).checked) fireEvent.click(page);
   const mode = screen.getByRole("radio", { name: "Agendar" });
   if (!(mode as HTMLInputElement).checked) fireEvent.click(mode);
@@ -153,7 +153,7 @@ describe("SocialFlow", () => {
     }));
     const user = userEvent.setup();
 
-    render(<App authRepository={new MockAuthRepository(session)} initialAuthSession={session} repository={repository} />);
+    render(<App authRepository={new MockAuthRepository(session)} initialAuthSession={session} repository={repository} socialAccountsRepository={new MockSocialAccountsRepository([], session.tenant.id)} />);
 
     expect(await screen.findByText("Nenhuma publicação agendada")).toBeInTheDocument();
     const publicationMetric = screen.getByText("Publicações", { selector: ".metric-card p" }).closest("article");
@@ -941,7 +941,7 @@ describe("SocialFlow", () => {
     await screen.findByText("Nenhuma publicação agendada");
     await user.click(screen.getByRole("button", { name: /Criar publicação/i }));
     await selectComposerPage(user);
-    if (states.length > 1) await user.click(screen.getByRole("checkbox", { name: "Café Centro" }));
+    if (states.length > 1) await user.click(screen.getByRole("checkbox", { name: "Facebook — Café Centro" }));
     await user.type(screen.getByRole("textbox", { name: /^Legenda/ }), "Teste de resultado persistido.");
     if (mode === "scheduled") await user.click(screen.getByRole("radio", { name: "Agendar" }));
     await user.click(screen.getByRole("button", { name: mode === "scheduled" ? "Agendar publicação" : "Publicar agora" }));
@@ -950,6 +950,57 @@ describe("SocialFlow", () => {
     expect(screen.queryByRole("heading", { name: "Criar publicação" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Publicações/ }));
     expect(screen.getByText(getPostTitle(persisted))).toBeInTheDocument();
+  });
+
+  it("envia Reel misto uma única vez e mantém feedback pendente sem polling", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<CreatePostResponse>();
+    const create = vi.fn<PostsRepository["create"]>().mockReturnValue(pending.promise);
+    const list = vi.fn().mockResolvedValue([]);
+    const reel: MediaAsset = { ...composerMediaAsset, mediaType: "video", mimeType: "video/mp4", originalFilename: "reel.mp4" };
+    const source = mediaRepository({ list: vi.fn().mockResolvedValue([reel]) });
+    render(<App repository={{ list, create }} mediaAssetsRepository={source} />);
+    await screen.findByText("Nenhuma publicação agendada");
+    await user.click(screen.getByRole("button", { name: /Criar publicação/i }));
+    await selectComposerPage(user);
+    await user.click(screen.getByRole("checkbox", { name: "Instagram — @cafeaurora" }));
+    await user.click(await screen.findByRole("button", { name: "Selecionar reel.mp4" }));
+    await user.type(screen.getByRole("textbox", { name: /^Legenda/ }), "Reel misto pendente.");
+    const button = screen.getByRole("button", { name: "Publicar agora" });
+    expect(button).toBeEnabled();
+    fireEvent.submit(button.closest("form")!);
+    fireEvent.submit(button.closest("form")!);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith({
+      title: "Reel misto pendente", caption: "Reel misto pendente.", publicationMode: "now",
+      mediaAssetIds: [reel.id], socialAccountIds: [pageId, "70000000-0000-4000-8000-000000000001"],
+    });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+    await act(async () => { pending.resolve(createResult({ ...createdPost, mediaAssetIds: [reel.id] }, ["published", "publishing"])); });
+    expect(await screen.findByRole("alert")).toHaveTextContent(/resultado ainda não foi confirmado: 1 publicada\(s\), 0 falha\(s\), 1 pendente\(s\)/i);
+    expect(screen.queryByText("Publicação publicada com sucesso!")).not.toBeInTheDocument();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(source.list).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserva destinos mistos e JPEG quando a criação falha", async () => {
+    const create = vi.fn().mockRejectedValue(new Error("backend rejeitou"));
+    const source = mediaRepository({ list: vi.fn().mockResolvedValue([composerMediaAsset]) });
+    render(<App repository={{ list: vi.fn().mockResolvedValue([]), create }} mediaAssetsRepository={source} />);
+    const user = userEvent.setup();
+    await screen.findByText("Nenhuma publicação agendada");
+    await user.click(screen.getByRole("button", { name: /Criar publicação/i }));
+    await selectComposerPage(user);
+    await user.click(screen.getByRole("checkbox", { name: "Instagram — @cafeaurora" }));
+    await user.click(await screen.findByRole("button", { name: "Selecionar foto-do-workspace.jpg" }));
+    await user.type(screen.getByRole("textbox", { name: /^Legenda/ }), "Rascunho preservado");
+    await user.click(screen.getByRole("button", { name: "Publicar agora" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Não foi possível criar a publicação.");
+    expect(screen.getByRole("checkbox", { name: "Facebook — Café Aurora" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Instagram — @cafeaurora" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Selecionar foto-do-workspace.jpg" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("textbox", { name: /^Legenda/ })).toHaveValue("Rascunho preservado");
   });
 
   it("envia somente os campos autorizados e omite scheduledFor ao publicar agora", async () => {

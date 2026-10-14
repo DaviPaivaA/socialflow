@@ -49,6 +49,13 @@ describe("contrato oficial de publicação", () => {
     });
   });
 
+  it("descarta autoridade e dados operacionais enviados pelo cliente", () => {
+    expect(validateCreatePost({ ...validInput, tenantId: "foreign-tenant", authorUserId: "foreign-author",
+      token: "client-token", provider: "instagram", operationId: "client-operation", storageKey: "client-path" })).toEqual({
+      success: true, data: { ...validInput, mediaAssetIds: [] },
+    });
+  });
+
   it.each([
     ["ausência", { socialAccountIds: undefined }],
     ["lista vazia", { socialAccountIds: [] }],

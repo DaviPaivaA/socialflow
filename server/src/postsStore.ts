@@ -2,6 +2,7 @@ import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { isPost, type CreatePostInput, type Post } from "./postContract.ts";
 import { isPostPublication, type CreatePostResponse, type PostPublication } from "../../shared/postPublicationContract.ts";
 import type { PostsContext } from "./postsContext.ts";
+import { requiredPublishingScopes, validatePublicationCompatibility, type PublicationMedia, type PublishingProvider } from "../../shared/publicationPolicy.ts";
 
 type PostRow = QueryResultRow & {
   author_user_id: unknown;
@@ -95,8 +96,15 @@ export class PostMediaAssetNotFoundError extends Error {
 
 export class PostMediaAssetUnsupportedError extends Error {
   constructor() {
-    super("A mídia não é compatível com a publicação de Facebook nesta etapa.");
+    super("A mídia não é compatível com os destinos selecionados.");
     this.name = "PostMediaAssetUnsupportedError";
+  }
+}
+
+export class InstagramPublishingUnavailableError extends Error {
+  constructor() {
+    super("A publicação no Instagram não está disponível neste ambiente.");
+    this.name = "InstagramPublishingUnavailableError";
   }
 }
 
@@ -166,13 +174,20 @@ function mapPublicationRow(row: PublicationRow): PostPublication {
   return publication;
 }
 
+function publishingProvider(row: DestinationRow): PublishingProvider | null {
+  if (row.account_type === "facebook_page") return "facebook";
+  if (row.account_type === "instagram_business") return "instagram";
+  return null;
+}
+
 function isValidDestination(row: DestinationRow): boolean {
+  const provider = publishingProvider(row);
+  if (!provider) return false;
   const metadata = row.metadata;
   const tasks = typeof metadata === "object" && metadata !== null && "tasks" in metadata
     ? metadata.tasks
     : null;
   return (
-    row.account_type === "facebook_page" &&
     row.is_active &&
     row.disconnected_at === null &&
     row.platform === "meta" &&
@@ -182,17 +197,21 @@ function isValidDestination(row: DestinationRow): boolean {
     row.connection_token_valid &&
     row.page_token_present &&
     row.page_token_valid &&
-    ["pages_show_list", "pages_read_engagement", "pages_manage_posts"].every((scope) => row.scopes.includes(scope)) &&
+    requiredPublishingScopes(provider).every((scope) => row.scopes.includes(scope)) &&
     Array.isArray(tasks) &&
-    tasks.includes("CREATE_CONTENT")
+    (tasks.includes("CREATE_CONTENT") || (provider === "instagram" && tasks.includes("MANAGE")))
   );
 }
 
 export class PostgresPostsStore {
   private readonly pool: Pool;
+  private readonly maxVideoBytes: number;
+  private readonly instagramPublishingAvailable: boolean;
 
-  constructor(pool: Pool) {
+  constructor(pool: Pool, options: { maxVideoBytes?: number; instagramPublishingAvailable?: boolean } = {}) {
     this.pool = pool;
+    this.maxVideoBytes = options.maxVideoBytes ?? 262_144_000;
+    this.instagramPublishingAvailable = options.instagramPublishingAvailable ?? false;
   }
 
   private async assertContext(context: PostsContext, queryable: Pool | PoolClient = this.pool): Promise<void> {
@@ -248,8 +267,9 @@ export class PostgresPostsStore {
       await this.assertContext(context, client);
 
       const mediaAssetId = input.mediaAssetIds[0];
+      let publicationMedia: PublicationMedia | null = null;
       if (mediaAssetId) {
-        const media = await client.query<{ media_type: string; mime_type: string; size_bytes: string }>(
+        const media = await client.query<{ media_type: PublicationMedia["mediaType"]; mime_type: string; size_bytes: string }>(
           `SELECT media_type, mime_type, size_bytes FROM media_assets
            WHERE tenant_id = $1::uuid AND id = $2::uuid AND deleted_at IS NULL
            FOR SHARE`,
@@ -257,11 +277,7 @@ export class PostgresPostsStore {
         );
         if (media.rowCount !== 1) throw new PostMediaAssetNotFoundError();
         const asset = media.rows[0]!;
-        if (
-          asset.media_type !== "image" ||
-          !["image/jpeg", "image/png"].includes(asset.mime_type) ||
-          Number(asset.size_bytes) > 4_000_000
-        ) throw new PostMediaAssetUnsupportedError();
+        publicationMedia = { mediaType: asset.media_type, mimeType: asset.mime_type, sizeBytes: Number(asset.size_bytes) };
       }
 
       const destinations = await client.query<DestinationRow>(
@@ -295,6 +311,16 @@ export class PostgresPostsStore {
         destinations.rows.length !== input.socialAccountIds.length ||
         !destinations.rows.every(isValidDestination)
       ) throw new InvalidPostDestinationError();
+
+      // Providers and media are derived only from tenant-qualified, locked rows.
+      const providers = destinations.rows.map(row => publishingProvider(row)!);
+      if (providers.includes("instagram") && !this.instagramPublishingAvailable) {
+        throw new InstagramPublishingUnavailableError();
+      }
+      if (!validatePublicationCompatibility({ providers, media: publicationMedia,
+        caption: input.caption, maxVideoBytes: this.maxVideoBytes }).valid) {
+        throw new PostMediaAssetUnsupportedError();
+      }
 
       const inserted = await client.query<{ id: string }>(
         `INSERT INTO posts (tenant_id, author_user_id, title, caption, status, scheduled_for)

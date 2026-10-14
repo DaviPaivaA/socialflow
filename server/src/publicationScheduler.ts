@@ -1,6 +1,6 @@
 import type { PublicationCoordinator } from "./publicationCoordinator.ts";
 
-type Coordinator = Pick<PublicationCoordinator, "failStale" | "publishDueBatch">;
+type Coordinator = Pick<PublicationCoordinator, "failStale" | "publishDueBatch"> & Partial<Pick<PublicationCoordinator, "stop" | "whenIdle">>;
 type Logger = { error(message: string, context: { phase: "stale" | "due" }): void };
 
 export type PublicationSchedulerOptions = {
@@ -13,14 +13,18 @@ export type PublicationSchedulerOptions = {
 };
 
 export class PublicationScheduler {
+  private readonly options: PublicationSchedulerOptions;
   private timer: unknown;
   private started = false;
+  private stopped = false;
   private active: Promise<void> | null = null;
 
-  constructor(private readonly options: PublicationSchedulerOptions) {}
+  constructor(options: PublicationSchedulerOptions) {
+    this.options = options;
+  }
 
   start(): void {
-    if (this.started) return;
+    if (this.started || this.stopped) return;
     this.started = true;
     const schedule = this.options.setInterval ?? ((callback, milliseconds) => globalThis.setInterval(callback, milliseconds));
     this.timer = schedule(() => { if (this.started) void this.tick(); }, this.options.intervalMs ?? 15_000);
@@ -28,6 +32,8 @@ export class PublicationScheduler {
   }
 
   stop(): void {
+    this.stopped = true;
+    this.options.coordinator.stop?.();
     if (!this.started) return;
     this.started = false;
     const cancel = this.options.clearInterval ?? ((handle: unknown) => globalThis.clearInterval(handle as ReturnType<typeof globalThis.setInterval>));
@@ -39,12 +45,13 @@ export class PublicationScheduler {
     return this.started;
   }
 
-  whenIdle(): Promise<void> {
-    return this.active ?? Promise.resolve();
+  async whenIdle(): Promise<void> {
+    await this.active;
+    await this.options.coordinator.whenIdle?.();
   }
 
   async tick(): Promise<void> {
-    if (this.active) return;
+    if (this.active || this.stopped) return;
     const work = async () => {
       const now = (this.options.now ?? (() => new Date()))();
       const logger = this.options.logger ?? console;
@@ -54,7 +61,7 @@ export class PublicationScheduler {
         logger.error("Falha na reconciliação de publicações.", { phase: "stale" });
       }
       try {
-        await this.options.coordinator.publishDueBatch(now);
+        if (!this.stopped) await this.options.coordinator.publishDueBatch(now);
       } catch {
         logger.error("Falha no processamento de publicações vencidas.", { phase: "due" });
       }

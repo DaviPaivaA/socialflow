@@ -1,13 +1,16 @@
 import type { CreatePostResponse } from "../../shared/postPublicationContract.ts";
-import type { FacebookPublishingService } from "./facebookPublishingService.ts";
 import { PublicationError } from "./publicationErrors.ts";
 import type { ClaimedPublication, PostPublicationsRepository } from "./postPublicationsRepository.ts";
+import type { PostgresPublicationOperationsRepository, LeasedPublicationOperation } from "./publicationOperationsRepository.ts";
+import type { PublishingService } from "./publishingService.ts";
 
 const DEFAULT_BATCH_SIZE = 25;
-const DEFAULT_POLL_INTERVAL_MS = 100;
-// The provider operation can take up to 60 seconds; allow persistence a short margin.
-const DEFAULT_WAIT_TIMEOUT_MS = 65_000;
+const HTTP_BUDGET_MS = 5_000;
 const STALE_AFTER_MS = 600_000;
+type Scope = { tenantId: string; postId: string };
+type Action = { target: ClaimedPublication; operation: LeasedPublicationOperation | null };
+type Acquisition = { action: Action | null; consumed: boolean };
+type Operations = Pick<PostgresPublicationOperationsRepository, "claimAction" | "claimDueActions" | "claimPostActions" | "hasOperation" | "sweepExpired">;
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -19,146 +22,165 @@ export type PublicationCoordinatorOptions = {
   pollIntervalMs?: number;
   waitTimeoutMs?: number;
   batchSize?: number;
+  operations?: Operations;
 };
 
 export class PublicationCoordinator {
-  constructor(
-    private readonly repository: PostPublicationsRepository,
-    private readonly service: Pick<FacebookPublishingService, "publish">,
-    private readonly options: PublicationCoordinatorOptions = {},
-  ) {}
+  private readonly repository: PostPublicationsRepository;
+  private readonly service: PublishingService | { publish(target: ClaimedPublication): Promise<void> };
+  private readonly options: PublicationCoordinatorOptions;
+  private readonly inFlight = new Set<Promise<void>>();
+  private readonly controllers = new Set<AbortController>();
+  private filling: Promise<void> | null = null;
+  private stopped = false;
+  private nextClass: "scheduled" | "operation" = "scheduled";
+
+  constructor(repository: PostPublicationsRepository,
+    service: PublicationCoordinator["service"], options: PublicationCoordinatorOptions = {}) {
+    this.repository = repository; this.service = service; this.options = options;
+  }
+
+  stop(): void {
+    this.stopped = true;
+    for (const controller of this.controllers) controller.abort();
+  }
+
+  async whenIdle(): Promise<void> {
+    while (this.filling || this.inFlight.size) {
+      await Promise.allSettled([...(this.filling ? [this.filling] : []), ...this.inFlight]);
+    }
+  }
+
+  private now(): Date { return this.options.now?.() ?? new Date(); }
 
   async publishPostNow(tenantId: string, postId: string): Promise<CreatePostResponse> {
-    const now = this.options.now ?? (() => new Date());
-    const startedAt = now();
-    const deadline = startedAt.getTime() + (this.options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS);
-    let claimedAny = false;
-    let publications;
+    const deadline = this.now().getTime() + Math.min(HTTP_BUDGET_MS, this.options.waitTimeoutMs ?? HTTP_BUDGET_MS);
     try {
-      for (;;) {
-        // Claim directly before dispatch. Earlier claims must not wait locally behind a slow Page.
-        const [claim] = await this.repository.claimPost(tenantId, postId, now(), 1);
-        if (!claim) break;
-        claimedAny = true;
-        await this.processClaims([claim]);
-      }
-
-      publications = await this.repository.listForPost(tenantId, postId);
-      const intervalMs = this.options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-      const wait = this.options.sleep ?? sleep;
-      let remainingMs = deadline - now().getTime();
-      while (publications.some(row => row.status === "scheduled" || row.status === "publishing") && remainingMs > 0) {
-        const delayMs = Math.min(intervalMs, remainingMs);
-        await wait(delayMs);
+      await this.fill(this.now(), { tenantId, postId });
+      let publications = await this.repository.listForPost(tenantId, postId);
+      while (!this.stopped && publications.some(row => row.status === "scheduled" || row.status === "publishing")) {
+        const remaining = deadline - this.now().getTime();
+        if (remaining <= 0) break;
+        await (this.options.sleep ?? sleep)(Math.min(this.options.pollIntervalMs ?? 100, remaining));
+        await this.fill(this.now(), { tenantId, postId });
         publications = await this.repository.listForPost(tenantId, postId);
-        remainingMs = deadline - now().getTime();
       }
     } catch (error) {
-      if (claimedAny) {
-        try {
-          await this.repository.refreshPostAggregate(tenantId, postId, now());
-        } catch {
-          // Preserve the acquisition/read error while still attempting finalization.
-        }
-      }
+      try { await this.repository.refreshPostAggregate(tenantId, postId, this.now()); } catch { /* Retain the original error. */ }
       throw error;
     }
-
-    const post = await this.repository.refreshPostAggregate(tenantId, postId, now());
-    // A different executor can finish during the refresh; return the latest persisted rows.
-    publications = await this.repository.listForPost(tenantId, postId);
-    return { post, publications };
+    const post = await this.repository.refreshPostAggregate(tenantId, postId, this.now());
+    return { post, publications: await this.repository.listForPost(tenantId, postId) };
   }
 
   async publishDueBatch(now: Date): Promise<void> {
-    const clock = this.options.now ?? (() => new Date());
-    const currentTime = () => new Date(Math.max(now.getTime(), clock().getTime()));
-    const affected: ClaimedPublication[] = [];
-    let claimTime = now;
-    let failure: { reason: unknown } | null = null;
-    try {
-      for (let index = 0; index < (this.options.batchSize ?? DEFAULT_BATCH_SIZE); index++) {
-        // The next destination is claimed only when it is ready to execute.
-        const [claim] = await this.repository.claimDue(claimTime, 1);
-        if (!claim) break;
-        affected.push(claim);
-        await this.processClaims([claim]);
-        claimTime = currentTime();
-      }
-    } catch (error) {
-      failure = { reason: error };
-    }
-    for (const { tenantId, postId } of this.affectedPosts(affected)) {
-      try {
-        await this.repository.refreshPostAggregate(tenantId, postId, currentTime());
-      } catch (error) {
-        failure ??= { reason: error };
-      }
-    }
-    if (failure) throw failure.reason;
-    await this.reconcileAggregates(currentTime());
+    if (this.stopped) return;
+    await this.fill(now);
+    await this.reconcileAggregates(new Date(Math.max(now.getTime(), this.now().getTime())));
   }
 
   async failStale(now: Date): Promise<void> {
-    const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
-    const affected = await this.repository.failStalePublishing(cutoff, now);
+    const affected = [
+      ...await this.repository.failStalePublishing(new Date(now.getTime() - STALE_AFTER_MS), now),
+      ...(await this.options.operations?.sweepExpired(now) ?? []),
+    ];
     let failure: { reason: unknown } | null = null;
+    const seen = new Set<string>();
     for (const { tenantId, postId } of affected) {
-      try {
-        await this.repository.refreshPostAggregate(tenantId, postId, now);
-      } catch (error) {
-        failure ??= { reason: error };
-      }
+      const key = tenantId + ":" + postId;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      try { await this.repository.refreshPostAggregate(tenantId, postId, now); }
+      catch (error) { failure ??= { reason: error }; }
     }
     if (failure) throw failure.reason;
     await this.reconcileAggregates(now);
+  }
+
+  /** Serialize short acquisitions only: no external action waits behind another action. */
+  private async fill(now: Date, scope?: Scope): Promise<void> {
+    while (this.filling) await this.filling;
+    if (this.stopped) return;
+    const work = this.acquire(now, scope);
+    this.filling = work;
+    try { await work; } finally { this.filling = null; }
+  }
+
+  private async acquire(now: Date, scope?: Scope): Promise<void> {
+    for (let index = 0; index < (this.options.batchSize ?? DEFAULT_BATCH_SIZE) && !this.stopped && this.inFlight.size < 2; index++) {
+      const first = this.nextClass;
+      let acquired = await this.claim(first, now, scope);
+      let acquiredClass = first;
+      if (!acquired.action && !this.stopped) {
+        acquiredClass = first === "scheduled" ? "operation" : "scheduled";
+        const fallback = await this.claim(acquiredClass, now, scope);
+        acquired = { action: fallback.action, consumed: acquired.consumed || fallback.consumed };
+      }
+      if (!acquired.action) {
+        if (acquired.consumed) continue; // Another owner won this lease; later destinations still have a slot.
+        break;
+      }
+      this.nextClass = acquiredClass === "scheduled" ? "operation" : "scheduled";
+      if (this.stopped) break; // A durable claim remains safely recoverable after restart.
+      this.launch(acquired.action);
+      now = new Date(Math.max(now.getTime(), this.now().getTime()));
+    }
+  }
+
+  private async claim(kind: "scheduled" | "operation", now: Date, scope?: Scope): Promise<Acquisition> {
+    const operations = this.options.operations;
+    if (kind === "operation") {
+      if (!operations) return { action: null, consumed: false };
+      const [operation] = scope
+        ? await operations.claimPostActions(scope.tenantId, scope.postId, now, 1)
+        : await operations.claimDueActions(now, 1);
+      if (!operation) return { action: null, consumed: false };
+      const target = await this.repository.findClaimedPublication?.(operation.tenantId, operation.publicationId);
+      return { action: target ? { target, operation } : null, consumed: true };
+    }
+    const [target] = scope
+      ? await this.repository.claimPost(scope.tenantId, scope.postId, now, 1)
+      : await this.repository.claimDue(now, 1);
+    if (!target) return { action: null, consumed: false };
+    if (!operations || !await operations.hasOperation(target.tenantId, target.id)) return { action: { target, operation: null }, consumed: true };
+    const operation = await operations.claimAction({ tenantId: target.tenantId, publicationId: target.id, now });
+    // An unavailable lease is NOT an absent operation and never authorizes a legacy mutation.
+    return { action: operation ? { target, operation } : null, consumed: true };
+  }
+
+  private launch(action: Action): void {
+    const controller = new AbortController();
+    this.controllers.add(controller);
+    const work = this.process(action, controller.signal).finally(() => {
+      this.inFlight.delete(work); this.controllers.delete(controller);
+    });
+    this.inFlight.add(work);
+  }
+
+  private async process({ target, operation }: Action, signal: AbortSignal): Promise<void> {
+    try {
+      if (signal.aborted) return;
+      if ("advance" in this.service) await this.service.advance({ target, operation, signal });
+      else await this.service.publish(target);
+    } catch (error) {
+      if (!operation && error instanceof PublicationError) {
+        try { await this.repository.markFailed({ id: target.id, tenantId: target.tenantId,
+          errorCode: error.code, errorMessage: error.message, failedAt: this.now() }); }
+        catch { /* Keep uncertain persistence for reconciliation, never resend. */ }
+      }
+    } finally {
+      try { await this.repository.refreshPostAggregate(target.tenantId, target.postId, this.now()); }
+      catch { /* The next durable aggregate sweep repairs this independently. */ }
+    }
   }
 
   private async reconcileAggregates(now: Date): Promise<void> {
     const candidates = await this.repository.listAggregateRefreshCandidates(this.options.batchSize ?? DEFAULT_BATCH_SIZE);
     let failure: { reason: unknown } | null = null;
     for (const { tenantId, postId } of candidates) {
-      try {
-        await this.repository.refreshPostAggregate(tenantId, postId, now);
-      } catch (error) {
-        failure ??= { reason: error };
-      }
+      try { await this.repository.refreshPostAggregate(tenantId, postId, now); }
+      catch (error) { failure ??= { reason: error }; }
     }
     if (failure) throw failure.reason;
-  }
-
-  private async processClaims(claims: ClaimedPublication[]): Promise<void> {
-    for (const claim of claims) {
-      try {
-        await this.service.publish(claim);
-      } catch (error) {
-        if (error instanceof PublicationError) {
-          try {
-            await this.repository.markFailed({
-              id: claim.id,
-              tenantId: claim.tenantId,
-              errorCode: error.code,
-              errorMessage: error.message,
-              failedAt: (this.options.now ?? (() => new Date()))(),
-            });
-          } catch {
-            // Persistence is uncertain; leave the row for the stale sweep.
-          }
-        }
-        // Unknown/operational failures leave publishing for the stale sweep. No retry.
-      }
-    }
-  }
-
-  private affectedPosts(claims: ClaimedPublication[]): Array<{ tenantId: string; postId: string }> {
-    const seen = new Set<string>();
-    const posts: Array<{ tenantId: string; postId: string }> = [];
-    for (const claim of claims) {
-      const key = `${claim.tenantId}:${claim.postId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      posts.push({ tenantId: claim.tenantId, postId: claim.postId });
-    }
-    return posts;
   }
 }
