@@ -13,6 +13,11 @@ import {
   validateSelectWorkspaceInput,
 } from "./authContract.ts";
 import { validateCreatePost } from "./postContract.ts";
+import { validateUpdateScheduledPost } from "./postManagementContract.ts";
+import {
+  InvalidPostUpdateError, PostForbiddenError, PostNotCancellableError,
+  PostNotEditableError, PostNotFoundError,
+} from "./postManagementErrors.ts";
 import { AuthenticatedPostsContextResolver } from "./postsContext.ts";
 import {
   InvalidPostDestinationError,
@@ -365,6 +370,7 @@ export function createApiServer({
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
       const method = request.method ?? "GET";
+      const postMatch = /^\/posts\/([^/]+)$/.exec(url.pathname);
       const metaMediaMatch = /^\/meta-media\/([^/]+)$/.exec(url.pathname);
       if (metaMediaMatch) {
         response.setHeader("Cache-Control", "private, no-store");
@@ -402,7 +408,7 @@ export function createApiServer({
       if (url.pathname.startsWith("/social-accounts")) {
         response.setHeader("Cache-Control", "no-store");
       }
-      if (url.pathname === "/posts") {
+      if (url.pathname === "/posts" || postMatch) {
         response.setHeader("Cache-Control", "no-store");
       }
       if (url.pathname === "/media-assets" || url.pathname.startsWith("/media-assets/")) {
@@ -643,6 +649,27 @@ export function createApiServer({
         return;
       }
 
+      if (postMatch && (method === "GET" || method === "PATCH" || method === "DELETE")) {
+        const context = await authService.require(request);
+        const postId = postMatch[1];
+        if (!isUuid(postId)) {
+          throw new RequestError(400, "invalid_post_id", "O identificador da publicação é inválido.");
+        }
+        if (method === "GET") {
+          sendJson(response, 200, await postsStore.get(context, postId));
+        } else if (method === "PATCH") {
+          const validation = validateUpdateScheduledPost(await readJsonBody(request));
+          if (!validation.success) {
+            throw new RequestError(400, "invalid_post", "Os dados da publicação são inválidos.", validation.fields);
+          }
+          sendJson(response, 200, await postsStore.updateScheduled(context, postId, validation.data));
+        } else {
+          await postsStore.cancelScheduled(context, postId);
+          sendNoContent(response);
+        }
+        return;
+      }
+
       if (url.pathname === "/media-assets" && method === "GET") {
         const context = await postsContextResolver.resolve(request);
         sendJson(response, 200, { mediaAssets: await mediaAssetsService.list(context) });
@@ -749,6 +776,7 @@ export function createApiServer({
       if (
         url.pathname === "/health" ||
         url.pathname === "/posts" ||
+        postMatch ||
         url.pathname === "/social-accounts" ||
         url.pathname === "/media-assets" ||
         mediaContentMatch ||
@@ -758,7 +786,9 @@ export function createApiServer({
       ) {
         response.setHeader(
           "Allow",
-          url.pathname === "/posts"
+          postMatch
+            ? "GET, PATCH, DELETE, OPTIONS"
+            : url.pathname === "/posts"
             ? "GET, POST, OPTIONS"
             : url.pathname === "/media-assets"
               ? "GET, POST, OPTIONS"
@@ -792,6 +822,17 @@ export function createApiServer({
     } catch (error) {
       if (error instanceof RequestError) {
         sendRequestError(response, error);
+        return;
+      }
+
+      if (error instanceof InvalidPostUpdateError) {
+        sendRequestError(response, new RequestError(400, error.code, error.message, error.fields));
+        return;
+      }
+      if (error instanceof PostNotFoundError || error instanceof PostForbiddenError ||
+        error instanceof PostNotEditableError || error instanceof PostNotCancellableError) {
+        const status = error instanceof PostNotFoundError ? 404 : error instanceof PostForbiddenError ? 403 : 409;
+        sendJson(response, status, { error: { code: error.code, message: error.message } });
         return;
       }
 

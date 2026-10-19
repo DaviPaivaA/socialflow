@@ -34,6 +34,31 @@ function repository(list: SocialAccountsRepository["list"]): SocialAccountsRepos
 }
 
 describe("useComposerDestinations", () => {
+  it("retains ineligible and missing initial selections for explicit removal, without enabling them as choices", async () => {
+    const source = repository(vi.fn().mockResolvedValue([{ ...pageA, status: "expired" }, pageB]));
+    const { result, rerender } = renderHook(({ initialSelectedIds }) => useComposerDestinations({ repository: source, workspaceId: "workspace-a", initialSelectedIds }),
+      { initialProps: { initialSelectedIds: [pageA.id, "missing"] } });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.accounts).toEqual([pageB]);
+    expect(result.current.selectedIds).toEqual([pageA.id, "missing"]);
+    expect(result.current.unavailableSelectedIds).toEqual([pageA.id, "missing"]);
+    act(() => result.current.toggle(pageA.id));
+    act(() => result.current.toggle("missing"));
+    rerender({ initialSelectedIds: [pageA.id] });
+    expect(result.current.selectedIds).toEqual([]);
+    act(() => result.current.toggle(pageA.id));
+    expect(result.current.selectedIds).toEqual([]);
+  });
+
+  it("does not discard the initial IDs when listing fails", async () => {
+    const source = repository(vi.fn().mockRejectedValue(new Error("offline")));
+    const { result } = renderHook(() => useComposerDestinations({ repository: source, workspaceId: "workspace-a", initialSelectedIds: [pageA.id] }));
+    await waitFor(() => expect(result.current.error).toBeTruthy());
+    expect(result.current.selectedIds).toEqual([pageA.id]);
+    act(() => result.current.toggle(pageA.id));
+    expect(result.current.selectedIds).toEqual([]);
+  });
+
   it("lista Facebook e Instagram elegíveis e alterna seleção mista", async () => {
     const disconnected = { ...pageA, id: "expired", status: "expired" as const };
     const source = repository(vi.fn().mockResolvedValue([pageA, disconnected, instagram, pageB]));

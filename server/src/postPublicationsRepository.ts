@@ -36,6 +36,13 @@ const POST_SELECT = `SELECT post.*,
     AND post_id=post.id ORDER BY position) AS media_asset_ids
   FROM posts post WHERE post.tenant_id=$1 AND post.id=$2`;
 
+// Only a logical removal with no attempted or durable operation history is absent from the aggregate.
+const UNTOUCHED_REMOVED_DESTINATION = `destination.status='cancelled'
+  AND destination.started_at IS NULL AND destination.published_at IS NULL AND destination.failed_at IS NULL
+  AND destination.provider_post_id IS NULL AND destination.error_code IS NULL AND destination.error_message IS NULL
+  AND NOT EXISTS (SELECT 1 FROM publication_operations operation
+    WHERE operation.tenant_id=destination.tenant_id AND operation.publication_id=destination.id)`;
+
 export class PostgresPostPublicationsRepository implements PostPublicationsRepository {
   private readonly pool: Pool;
   private readonly graphApiVersion: string;
@@ -57,31 +64,76 @@ export class PostgresPostPublicationsRepository implements PostPublicationsRepos
 
   private async claim(now: Date, limit: number | null, tenantId: string | null, postId: string | null): Promise<ClaimedPublication[]> {
     const client = await this.pool.connect();
+    let transactionStarted = false;
+    let rollbackFailed = false;
+    const claimed: ClaimedPublication[] = [];
+    const examined: string[] = [];
+    const maxPostAttempts = Math.max(100, limit ?? 1);
     try {
-      await client.query("BEGIN");
-      const result = await client.query<ClaimedPublication>(`
-      WITH candidates AS (
-        SELECT destination.id FROM post_publications destination
-        JOIN posts post ON post.tenant_id = destination.tenant_id AND post.id = destination.post_id
-        WHERE destination.status = 'scheduled' AND post.scheduled_for <= $1
-          AND post.status IN ('scheduled', 'publishing')
-          AND ($3::uuid IS NULL OR destination.tenant_id = $3)
-          AND ($4::uuid IS NULL OR destination.post_id = $4)
-        ORDER BY post.scheduled_for, destination.tenant_id, destination.id
-        LIMIT $2 FOR UPDATE OF destination SKIP LOCKED
-      )
-      UPDATE post_publications destination SET status = 'publishing', started_at = $1, updated_at = $1
-      FROM candidates WHERE destination.id = candidates.id
-      RETURNING destination.id, destination.post_id AS "postId",
-        destination.social_account_id AS "socialAccountId", destination.tenant_id AS "tenantId"
-    `, [now, limit, tenantId, postId]);
-      for (const target of result.rows) await preparePublicationOperation(client, target, { graphApiVersion: this.graphApiVersion, now });
-      await client.query("COMMIT");
-      return result.rows;
+      while ((limit === null || claimed.length < limit) && examined.length < maxPostAttempts) {
+        await client.query("BEGIN");
+        transactionStarted = true;
+        // The shared barrier is the post, always before any destination lock. Locked posts
+        // are skipped within this scan, so one busy post cannot stall an unrelated tenant.
+        const candidate = await client.query<{ tenantId: string; postId: string }>(`
+          SELECT post.tenant_id AS "tenantId",post.id AS "postId" FROM posts post
+          WHERE post.scheduled_for <= $1 AND post.status IN ('scheduled','publishing')
+            AND ($2::uuid IS NULL OR post.tenant_id=$2) AND ($3::uuid IS NULL OR post.id=$3)
+            AND NOT (post.id=ANY($4::uuid[]))
+            AND EXISTS (SELECT 1 FROM post_publications destination
+              WHERE destination.tenant_id=post.tenant_id AND destination.post_id=post.id AND destination.status='scheduled')
+          ORDER BY post.scheduled_for,post.tenant_id,post.id LIMIT 1 FOR UPDATE OF post SKIP LOCKED`,
+        [now, tenantId, postId, examined]);
+        const post = candidate.rows[0];
+        if (!post) { await client.query("COMMIT"); transactionStarted = false; break; }
+        examined.push(post.postId);
+        // Discovery is not authority: use a new READ COMMITTED statement after the lock.
+        const eligible = await client.query(`SELECT id FROM posts
+          WHERE tenant_id=$1 AND id=$2 AND scheduled_for<=$3 AND status IN ('scheduled','publishing')`,
+        [post.tenantId, post.postId, now]);
+        if (eligible.rowCount !== 0) {
+          const result = await client.query<ClaimedPublication>(`
+            WITH candidates AS (
+              SELECT id FROM post_publications
+              WHERE tenant_id=$3 AND post_id=$4 AND status='scheduled'
+              ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED
+            )
+            UPDATE post_publications destination SET status='publishing',started_at=$1,updated_at=$1
+            FROM candidates WHERE destination.tenant_id=$3 AND destination.id=candidates.id
+            RETURNING destination.id,destination.post_id AS "postId",
+              destination.social_account_id AS "socialAccountId",destination.tenant_id AS "tenantId"`,
+          [now, limit === null ? null : limit - claimed.length, post.tenantId, post.postId]);
+          for (const target of result.rows) {
+            await preparePublicationOperation(client, target, { graphApiVersion: this.graphApiVersion, now });
+          }
+          await client.query("COMMIT");
+          transactionStarted = false;
+          claimed.push(...result.rows);
+        } else {
+          await client.query("COMMIT");
+          transactionStarted = false;
+        }
+      }
+      return claimed;
     } catch (error) {
-      await client.query("ROLLBACK");
+      if (transactionStarted) {
+        try { await client.query("ROLLBACK"); } catch { rollbackFailed = true; }
+      }
+      if (claimed.length > 0) {
+        // Earlier post transactions are already durable and must reach the dispatcher even
+        // if this later post failed. Never retry the failed post or expose raw DB errors.
+        console.error("Falha parcial na aquisição de publicações.", {
+          phase: "claim", committedClaims: claimed.length, rollbackFailed,
+        });
+        return claimed;
+      }
+      if (rollbackFailed) {
+        console.error("Falha ao reverter a aquisição de publicações.", {
+          phase: "claim", committedClaims: 0, rollbackFailed: true,
+        });
+      }
       throw error;
-    } finally { client.release(); }
+    } finally { client.release(rollbackFailed); }
   }
 
   async listForPost(tenantId: string, postId: string): Promise<PostPublication[]> {
@@ -141,6 +193,7 @@ export class PostgresPostPublicationsRepository implements PostPublicationsRepos
           SELECT 1 FROM post_publications destination
           WHERE destination.tenant_id = post.tenant_id AND destination.post_id = post.id
             AND destination.status <> 'scheduled'
+            AND NOT (${UNTOUCHED_REMOVED_DESTINATION})
         )
       ) OR (
         post.status = 'publishing'
@@ -171,12 +224,21 @@ export class PostgresPostPublicationsRepository implements PostPublicationsRepos
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const post = await client.query("SELECT id FROM posts WHERE tenant_id=$1 AND id=$2 FOR UPDATE", [tenantId, postId]);
+      const post = await client.query("SELECT id,status FROM posts WHERE tenant_id=$1 AND id=$2 FOR UPDATE", [tenantId, postId]);
       if (post.rowCount === 0) throw new Error("Publicação não encontrada.");
-      const rows = await client.query<{status: string}>("SELECT status FROM post_publications WHERE tenant_id=$1 AND post_id=$2", [tenantId, postId]);
-      const statuses = rows.rows.map(row => row.status);
+      const rows = await client.query<{status: string; removed: boolean}>(
+        `SELECT destination.status,(${UNTOUCHED_REMOVED_DESTINATION}) AS removed FROM post_publications destination
+         WHERE destination.tenant_id=$1 AND destination.post_id=$2`, [tenantId, postId]);
+      // Explicit cancellation is final; legacy zero-target records have no evidence for a new aggregate.
+      if (post.rows[0].status === "cancelled" || rows.rows.length === 0) {
+        const result = await client.query(POST_SELECT, [tenantId, postId]);
+        await client.query("COMMIT");
+        return mapPost(result.rows[0]);
+      }
+      const statuses = rows.rows.filter(row => !row.removed).map(row => row.status);
       let status: Post["status"];
-      if (statuses.length === 0 || statuses.every(value => value === "scheduled")) status = "scheduled";
+      if (statuses.length === 0) status = "cancelled";
+      else if (statuses.every(value => value === "scheduled")) status = "scheduled";
       else if (statuses.some(value => value === "publishing" || value === "scheduled")) status = "publishing";
       else if (statuses.every(value => value === "published")) status = "published";
       else if (statuses.some(value => value === "published")) status = "partially_failed";

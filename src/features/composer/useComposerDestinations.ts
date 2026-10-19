@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import type { SocialAccount } from "../../../shared/socialAccountContract";
 import { requiredPublishingScopes } from "../../../shared/publicationPolicy";
 import type { SocialAccountsRepository } from "../../data/socialAccounts/SocialAccountsRepository";
@@ -9,13 +9,14 @@ export type ComposerDestinationsState = {
   reconnectionRequired: boolean;
   isLoading: boolean;
   selectedIds: string[];
+  unavailableSelectedIds: string[];
   toggle(id: string): void;
 };
 
-type DestinationState = Omit<ComposerDestinationsState, "toggle"> & { workspaceId: string };
+type DestinationState = Omit<ComposerDestinationsState, "toggle" | "unavailableSelectedIds"> & { workspaceId: string };
 
-function blankState(workspaceId: string): DestinationState {
-  return { workspaceId, error: null, accounts: [], reconnectionRequired: false, isLoading: true, selectedIds: [] };
+function blankState(workspaceId: string, initialSelectedIds: readonly string[] = []): DestinationState {
+  return { workspaceId, error: null, accounts: [], reconnectionRequired: false, isLoading: true, selectedIds: [...initialSelectedIds] };
 }
 
 function eligible(account: SocialAccount): boolean {
@@ -42,17 +43,20 @@ function publicAccount(account: SocialAccount): SocialAccount {
   };
 }
 
-export function useComposerDestinations({ repository, workspaceId }: {
+export function useComposerDestinations({ repository, workspaceId, initialSelectedIds }: {
   repository: SocialAccountsRepository;
   workspaceId: string;
+  initialSelectedIds?: readonly string[];
 }): ComposerDestinationsState {
-  const [state, setState] = useState<DestinationState>(() => blankState(workspaceId));
+  const readInitialSelection = useEffectEvent(() => initialSelectedIds);
+  const [state, setState] = useState<DestinationState>(() => blankState(workspaceId, initialSelectedIds));
   const generation = useRef(0);
 
   useEffect(() => {
+    const initialIds = readInitialSelection();
     const activeGeneration = ++generation.current;
     queueMicrotask(() => {
-      if (generation.current === activeGeneration) setState(blankState(workspaceId));
+      if (generation.current === activeGeneration) setState(blankState(workspaceId, initialIds));
     });
     void Promise.resolve().then(() => repository.list(workspaceId)).then(
       (accounts) => {
@@ -74,7 +78,7 @@ export function useComposerDestinations({ repository, workspaceId }: {
           accounts: [],
           reconnectionRequired: false,
           isLoading: false,
-          selectedIds: [],
+          selectedIds: current.selectedIds,
         } : current);
       },
     );
@@ -83,7 +87,7 @@ export function useComposerDestinations({ repository, workspaceId }: {
 
   const toggle = useCallback((id: string) => {
     setState((current) => {
-      if (current.workspaceId !== workspaceId || !current.accounts.some((account) => account.id === id)) return current;
+      if (current.workspaceId !== workspaceId || (!current.selectedIds.includes(id) && !current.accounts.some((account) => account.id === id))) return current;
       return { ...current, selectedIds: current.selectedIds.includes(id)
         ? current.selectedIds.filter((selectedId) => selectedId !== id)
         : [...current.selectedIds, id] };
@@ -97,6 +101,7 @@ export function useComposerDestinations({ repository, workspaceId }: {
     reconnectionRequired: visible.reconnectionRequired,
     isLoading: visible.isLoading,
     selectedIds: visible.selectedIds,
+    unavailableSelectedIds: visible.selectedIds.filter((id) => !visible.accounts.some((account) => account.id === id)),
     toggle,
   };
 }

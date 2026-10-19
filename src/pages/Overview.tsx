@@ -14,6 +14,7 @@ type OverviewProps = {
   loadState: PostsLoadState;
   nextPost?: Post;
   onCompose: () => void;
+  onOpenPost: (id: string) => void;
   posts: Post[];
 };
 
@@ -22,6 +23,7 @@ export function Overview({
   loadState,
   nextPost,
   onCompose,
+  onOpenPost,
   posts,
 }: OverviewProps) {
   return (
@@ -66,7 +68,7 @@ export function Overview({
               <div>
                 <strong>{getPostTitle(nextPost)}</strong>
                 <p>{nextPost.caption}</p>
-                <button onClick={() => goTo("posts")} type="button">Ver detalhes →</button>
+                <button onClick={() => onOpenPost(nextPost.id)} type="button">Ver detalhes →</button>
               </div>
             </div>
           </article>

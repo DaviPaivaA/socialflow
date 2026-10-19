@@ -9,6 +9,7 @@ import {
   formatScheduledTime,
 } from "../domain/scheduling";
 import type { Post, PostStatus } from "../types/social";
+import { PostActionsMenu } from "../features/posts/PostActionsMenu";
 
 type PostFilter = "all" | "scheduled" | "draft" | "published";
 export type PostsLoadState = "loading" | "success" | "error";
@@ -24,6 +25,10 @@ type PostsProps = {
   loadState: PostsLoadState;
   posts: Post[];
   onCompose: () => void;
+  canManageAuthor: (post: Post) => boolean;
+  onDetails: (post: Post) => void;
+  onEdit: (post: Post) => void;
+  onCancel: (post: Post) => void;
 };
 
 function postMatchesFilter(post: Post, filter: PostFilter) {
@@ -36,7 +41,7 @@ function postThumbnailSymbol(status: PostStatus) {
   return "◌";
 }
 
-export function Posts({ loadState, posts, onCompose }: PostsProps) {
+export function Posts({ loadState, posts, onCompose, canManageAuthor, onDetails, onEdit, onCancel }: PostsProps) {
   const [filter, setFilter] = useState<PostFilter>("all");
   const visible =
     loadState !== "success" || filter === "all"
@@ -101,13 +106,7 @@ export function Posts({ loadState, posts, onCompose }: PostsProps) {
                     <span>▦ {schedule}</span>
                   </div>
                 </div>
-                <button
-                  className="more-button"
-                  aria-label={"Opções de " + title}
-                  type="button"
-                >
-                  •••
-                </button>
+                <PostActionsMenu post={post} canManageAuthor={canManageAuthor(post)} onDetails={() => onDetails(post)} onEdit={() => onEdit(post)} onCancel={() => onCancel(post)} />
               </article>
             );
           })}

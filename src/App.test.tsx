@@ -10,7 +10,7 @@ import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { ApiClient } from "./data/api/apiClient";
+import { ApiClient, HttpError } from "./data/api/apiClient";
 import { initialPosts } from "./data/mockData";
 import { MockAuthRepository, demoAuthSession } from "./data/auth/MockAuthRepository";
 import type { AuthRepository } from "./data/auth/AuthRepository";
@@ -99,6 +99,10 @@ const composerMediaAsset: MediaAsset = {
   uploadedByUserId: demoAuthSession.user.id, width: null,
 };
 
+function postManagementMethods() {
+  return { get: vi.fn<PostsRepository["get"]>(), updateScheduled: vi.fn<PostsRepository["updateScheduled"]>(), cancelScheduled: vi.fn<PostsRepository["cancelScheduled"]>() };
+}
+
 function mediaRepository(overrides: Partial<MediaAssetsRepository> = {}): MediaAssetsRepository {
   return {
     list: vi.fn().mockResolvedValue([]),
@@ -111,6 +115,67 @@ function mediaRepository(overrides: Partial<MediaAssetsRepository> = {}): MediaA
 describe("SocialFlow", () => {
   beforeEach(() => {
     window.location.hash = "#/";
+  });
+
+  it("opens the exact next post from Overview details", async () => {
+    const user = userEvent.setup();
+    const post = { ...createdPost, title: "Próximo post exato", scheduledFor: "2098-01-01T12:00:00Z" };
+    const repository: PostsRepository = { ...postManagementMethods(), list: vi.fn().mockResolvedValue([post]), create: vi.fn(),
+      get: vi.fn().mockResolvedValue({ ...createResult(post), permissions: { canEditSchedule: true, canCancelSchedule: true } }) };
+    render(<App repository={repository} />);
+    await user.click(await screen.findByRole("button", { name: "Ver detalhes →" }));
+    await waitFor(() => expect(window.location.hash).toBe(`#/publicacoes/${post.id}`));
+    expect(await screen.findByRole("heading", { name: "Próximo post exato" })).toBeInTheDocument();
+  });
+
+  it("search uses the current loaded list and navigates exact detail without another list request", async () => {
+    const user = userEvent.setup();
+    const post = { ...createdPost, title: "Busca destino exato" };
+    const repository: PostsRepository = { ...postManagementMethods(), list: vi.fn().mockResolvedValue([post]), create: vi.fn(),
+      get: vi.fn().mockResolvedValue({ ...createResult(post), permissions: { canEditSchedule: true, canCancelSchedule: true } }) };
+    render(<App repository={repository} />);
+    await screen.findByText("Busca destino exato");
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    await user.type(screen.getByRole("combobox"), "destino exato");
+    await user.click(screen.getByRole("option", { name: /Busca destino exato/ }));
+    expect(await screen.findByRole("heading", { name: "Busca destino exato" })).toBeInTheDocument();
+    expect(window.location.hash).toBe(`#/publicacoes/${post.id}`);
+    expect(repository.list).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps Composer as the only modal when the global search shortcut is pressed", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "＋ Criar publicação" }));
+    const composer = screen.getByRole("textbox", { name: /Legenda/ });
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /Legenda/ })).toBe(composer);
+    expect(screen.getByRole("button", { name: "Ajuda" })).toBeDisabled();
+  });
+
+  it("clears search on Workspace switch and ignores late previous Workspace list results", async () => {
+    const user = userEvent.setup();
+    const tenantB = { ...demoAuthSession.tenant, id: uuid(990), name: "Workspace busca B", slug: "busca-b" };
+    const authRepository = new MockAuthRepository(demoAuthSession, [
+      { tenantId: demoAuthSession.tenant.id, name: demoAuthSession.tenant.name, slug: demoAuthSession.tenant.slug, role: "owner", selected: true },
+      { tenantId: tenantB.id, name: tenantB.name, slug: tenantB.slug, role: "owner", selected: false },
+    ]);
+    const previousList = deferred<Post[]>();
+    const repository: PostsRepository = { ...postManagementMethods(), list: vi.fn().mockReturnValueOnce(previousList.promise)
+      .mockResolvedValue([{ ...createdPost, tenantId: tenantB.id, title: "Somente workspace B" }]), create: vi.fn() };
+    render(<App authRepository={authRepository} initialAuthSession={demoAuthSession} repository={repository} />);
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    await user.type(screen.getByRole("combobox", { name: "Título ou legenda" }), "anterior");
+    fireEvent.change(await screen.findByLabelText("Workspace ativo"), { target: { value: tenantB.id } });
+    await waitFor(() => expect(screen.getByLabelText("Workspace ativo")).toHaveValue(tenantB.id));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "k", metaKey: true });
+    expect(screen.getByRole("combobox", { name: "Título ou legenda" })).toHaveValue("");
+    await act(async () => { previousList.resolve([{ ...createdPost, title: "Post anterior privado" }]); });
+    await user.type(screen.getByRole("combobox", { name: "Título ou legenda" }), "workspace B");
+    expect(screen.getByRole("option", { name: /Somente workspace B/ })).toBeInTheDocument();
+    expect(screen.queryByText("Post anterior privado")).not.toBeInTheDocument();
   });
 
   it("renderiza a aplicação", () => {
@@ -212,7 +277,7 @@ describe("SocialFlow", () => {
 
   it("exibe estados de carregamento e vazio sem publicação fictícia", async () => {
     const pendingList = deferred<Post[]>();
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn(() => pendingList.promise),
     };
@@ -238,7 +303,7 @@ describe("SocialFlow", () => {
   });
 
   it("mantém o cartão de próxima publicação quando existe um post", async () => {
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn().mockResolvedValue(initialPosts),
     };
@@ -268,7 +333,7 @@ describe("SocialFlow", () => {
       scheduledFor: "2026-08-20T07:45:00-03:00",
       title: "Publicação posterior recebida primeiro",
     };
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn(() => pendingList.promise),
     };
@@ -317,7 +382,7 @@ describe("SocialFlow", () => {
       ...initialPosts[0],
       scheduledFor: "2026-08-12T08:20:00-03:00",
     };
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn(() => pendingList.promise),
     };
@@ -357,7 +422,7 @@ describe("SocialFlow", () => {
       title: "Publicação das 09:02",
     };
     const list = vi.fn(() => pendingList.promise);
-    const repository: PostsRepository = { create: vi.fn(), list };
+    const repository: PostsRepository = { ...postManagementMethods(), create: vi.fn(), list };
     const view = render(<App repository={repository} />);
 
     try {
@@ -416,7 +481,7 @@ describe("SocialFlow", () => {
       .mockImplementationOnce(() => laterCreate.promise)
       .mockImplementationOnce(() => earlierCreate.promise);
     const list = vi.fn(() => pendingList.promise);
-    const repository: PostsRepository = { create, list };
+    const repository: PostsRepository = { ...postManagementMethods(), create, list };
     const view = render(<App repository={repository} />);
 
     try {
@@ -482,11 +547,11 @@ describe("SocialFlow", () => {
 
   it("mostra falha no Overview sem reutilizar posts de outro repositório", async () => {
     const pendingNextList = deferred<Post[]>();
-    const firstRepository: PostsRepository = {
+    const firstRepository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn().mockResolvedValue(initialPosts),
     };
-    const nextRepository: PostsRepository = {
+    const nextRepository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn(() => pendingNextList.promise),
     };
@@ -658,7 +723,7 @@ describe("SocialFlow", () => {
   it("remove o toast de falha após o prazo de exibição", async () => {
     vi.useFakeTimers();
     const pendingList = deferred<Post[]>();
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn(() => pendingList.promise),
     };
@@ -696,7 +761,7 @@ describe("SocialFlow", () => {
       .fn<PostsRepository["create"]>()
       .mockImplementationOnce(() => firstCreate.promise)
       .mockImplementationOnce(() => secondCreate.promise);
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create,
       list: vi.fn(() => pendingList.promise),
     };
@@ -782,7 +847,7 @@ describe("SocialFlow", () => {
   it("não mostra contadores de Publicações durante o carregamento", () => {
     window.location.hash = "#/publicacoes";
     const pendingList = deferred<Post[]>();
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn(() => pendingList.promise),
     };
@@ -800,7 +865,7 @@ describe("SocialFlow", () => {
   it("mostra falha sem contadores quando a listagem é rejeitada", async () => {
     window.location.hash = "#/publicacoes";
     const pendingList = deferred<Post[]>();
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn(() => pendingList.promise),
     };
@@ -829,7 +894,7 @@ describe("SocialFlow", () => {
     const pendingList = deferred<Post[]>();
     const pendingCreate = deferred<CreatePostResponse>();
     const create = vi.fn(() => pendingCreate.promise);
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create,
       list: vi.fn(() => pendingList.promise),
     };
@@ -873,7 +938,7 @@ describe("SocialFlow", () => {
 
   it("mostra contadores zerados somente após uma lista vazia confirmada", async () => {
     window.location.hash = "#/publicacoes";
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn().mockResolvedValue([]),
     };
@@ -889,7 +954,7 @@ describe("SocialFlow", () => {
 
   it("preserva contadores e publicações após uma listagem com posts", async () => {
     window.location.hash = "#/publicacoes";
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn().mockResolvedValue(initialPosts),
     };
@@ -937,7 +1002,7 @@ describe("SocialFlow", () => {
       initialSocialAccounts[1],
       { ...initialSocialAccounts[1], id: uuid(801), displayName: "Café Centro" },
     ]);
-    render(<App repository={{ list: vi.fn().mockResolvedValue([]), create }} socialAccountsRepository={socialAccountsRepository} />);
+    render(<App repository={{ ...postManagementMethods(), list: vi.fn().mockResolvedValue([]), create }} socialAccountsRepository={socialAccountsRepository} />);
     await screen.findByText("Nenhuma publicação agendada");
     await user.click(screen.getByRole("button", { name: /Criar publicação/i }));
     await selectComposerPage(user);
@@ -959,7 +1024,7 @@ describe("SocialFlow", () => {
     const list = vi.fn().mockResolvedValue([]);
     const reel: MediaAsset = { ...composerMediaAsset, mediaType: "video", mimeType: "video/mp4", originalFilename: "reel.mp4" };
     const source = mediaRepository({ list: vi.fn().mockResolvedValue([reel]) });
-    render(<App repository={{ list, create }} mediaAssetsRepository={source} />);
+    render(<App repository={{ ...postManagementMethods(), list, create }} mediaAssetsRepository={source} />);
     await screen.findByText("Nenhuma publicação agendada");
     await user.click(screen.getByRole("button", { name: /Criar publicação/i }));
     await selectComposerPage(user);
@@ -987,7 +1052,7 @@ describe("SocialFlow", () => {
   it("preserva destinos mistos e JPEG quando a criação falha", async () => {
     const create = vi.fn().mockRejectedValue(new Error("backend rejeitou"));
     const source = mediaRepository({ list: vi.fn().mockResolvedValue([composerMediaAsset]) });
-    render(<App repository={{ list: vi.fn().mockResolvedValue([]), create }} mediaAssetsRepository={source} />);
+    render(<App repository={{ ...postManagementMethods(), list: vi.fn().mockResolvedValue([]), create }} mediaAssetsRepository={source} />);
     const user = userEvent.setup();
     await screen.findByText("Nenhuma publicação agendada");
     await user.click(screen.getByRole("button", { name: /Criar publicação/i }));
@@ -1006,7 +1071,7 @@ describe("SocialFlow", () => {
   it("envia somente os campos autorizados e omite scheduledFor ao publicar agora", async () => {
     const user = userEvent.setup();
     const create = vi.fn().mockResolvedValue(createResult({ ...createdPost, status: "published" }, ["published"]));
-    render(<App repository={{ list: vi.fn().mockResolvedValue([]), create }} />);
+    render(<App repository={{ ...postManagementMethods(), list: vi.fn().mockResolvedValue([]), create }} />);
     await screen.findByText("Nenhuma publicação agendada");
     await user.click(screen.getByRole("button", { name: /Criar publicação/i }));
     await selectComposerPage(user);
@@ -1162,7 +1227,7 @@ describe("SocialFlow", () => {
     const user = userEvent.setup();
     const pendingList = deferred<Post[]>();
     const create = vi.fn<PostsRepository["create"]>();
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create,
       list: vi.fn(() => pendingList.promise),
     };
@@ -1199,11 +1264,11 @@ describe("SocialFlow", () => {
     const user = userEvent.setup();
     const pendingCreate = deferred<CreatePostResponse>();
     const pendingStaleList = deferred<Post[]>();
-    const firstRepository: PostsRepository = {
+    const firstRepository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(() => pendingCreate.promise),
       list: vi.fn().mockResolvedValue(initialPosts),
     };
-    const nextRepository: PostsRepository = {
+    const nextRepository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: vi.fn(() => pendingStaleList.promise),
     };
@@ -1256,12 +1321,12 @@ describe("SocialFlow", () => {
       ...createdPost,
       title: "Versão da listagem com o mesmo identificador",
     };
-    const firstRepository: PostsRepository = {
+    const firstRepository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(() => pendingCreate.promise),
       list: vi.fn().mockResolvedValue([oldOnlyPost]),
     };
     const nextList = vi.fn(() => pendingNextList.promise);
-    const nextRepository: PostsRepository = {
+    const nextRepository: PostsRepository = { ...postManagementMethods(),
       create: vi.fn(),
       list: nextList,
     };
@@ -1327,10 +1392,10 @@ describe("SocialFlow", () => {
       .mockImplementationOnce(() => firstAList.promise)
       .mockImplementationOnce(() => secondAList.promise);
     const createA = vi.fn<PostsRepository["create"]>();
-    const repositoryA: PostsRepository = { create: createA, list: listA };
+    const repositoryA: PostsRepository = { ...postManagementMethods(), create: createA, list: listA };
     const createB = vi.fn<PostsRepository["create"]>();
     const listB = vi.fn(() => pendingBList.promise);
-    const repositoryB: PostsRepository = { create: createB, list: listB };
+    const repositoryB: PostsRepository = { ...postManagementMethods(), create: createB, list: listB };
     const { rerender } = render(<App repository={repositoryA} />);
 
     await act(async () => {
@@ -1410,7 +1475,7 @@ describe("SocialFlow", () => {
     const create = vi
       .fn<PostsRepository["create"]>()
       .mockImplementation(() => pendingCreate.promise);
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create,
       list: vi.fn().mockResolvedValue(initialPosts),
     };
@@ -1459,7 +1524,7 @@ describe("SocialFlow", () => {
     const user = userEvent.setup();
     const pendingCreate = deferred<CreatePostResponse>();
     const create = vi.fn(() => pendingCreate.promise);
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create,
       list: vi.fn().mockResolvedValue(initialPosts),
     };
@@ -1528,7 +1593,7 @@ describe("SocialFlow", () => {
     const create = vi
       .fn<PostsRepository["create"]>()
       .mockImplementation(() => pendingCreate.promise);
-    const repository: PostsRepository = {
+    const repository: PostsRepository = { ...postManagementMethods(),
       create,
       list: vi.fn().mockResolvedValue(initialPosts),
     };
@@ -1705,7 +1770,7 @@ describe("SocialFlow", () => {
   });
 
   it("envia ao PostsRepository somente o ID da mídia selecionada no Composer", async () => {
-    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createResult(createdPost)) };
+    const postsRepository: PostsRepository = { ...postManagementMethods(), list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createResult(createdPost)) };
     const source = mediaRepository({ list: vi.fn().mockResolvedValue([composerMediaAsset]) });
     render(<App repository={postsRepository} mediaAssetsRepository={source} />);
     await screen.findByText("Nenhuma publicação agendada");
@@ -1741,7 +1806,7 @@ describe("SocialFlow", () => {
     const createObjectURL = vi.fn().mockReturnValue("blob:workspace-a");
     const revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", Object.assign(class extends URL {}, { createObjectURL, revokeObjectURL }));
-    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createResult({ ...createdPost, tenantId: tenantB.id, mediaAssetIds: [] })) };
+    const postsRepository: PostsRepository = { ...postManagementMethods(), list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createResult({ ...createdPost, tenantId: tenantB.id, mediaAssetIds: [] })) };
     const accounts = new MockSocialAccountsRepository();
     vi.spyOn(accounts, "list").mockImplementation(async (workspaceId) => workspaceId === tenantB.id
       ? [{ ...initialSocialAccounts[1], id: uuid(811) }]
@@ -1767,7 +1832,7 @@ describe("SocialFlow", () => {
   });
 
   it("permite criar Post sem mídia após falha da biblioteca", async () => {
-    const postsRepository: PostsRepository = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createResult(createdPost)) };
+    const postsRepository: PostsRepository = { ...postManagementMethods(), list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(createResult(createdPost)) };
     const source = mediaRepository({ list: vi.fn().mockRejectedValue(new Error("offline")) });
     render(<App repository={postsRepository} mediaAssetsRepository={source} />);
     await screen.findByText("Nenhuma publicação agendada");
@@ -1777,5 +1842,473 @@ describe("SocialFlow", () => {
     fireEvent.change((await scheduledDateInput()), { target: { value: "2027-09-25" } });
     fireEvent.submit((await scheduledSubmitButton()).closest("form")!);
     await waitFor(() => expect(postsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ mediaAssetIds: [] })));
+  });
+});
+
+describe("scheduled post management", () => {
+  beforeEach(() => { window.location.hash = "#/publicacoes"; });
+  const managedPost: Post = { ...createdPost, title: "Agendamento gerenciável", scheduledFor: new Date(Date.now() + 60 * 60 * 1000).toISOString() };
+  function source(overrides: Partial<PostsRepository> = {}): PostsRepository {
+    return { list: vi.fn().mockResolvedValue([managedPost]), create: vi.fn(), updateScheduled: vi.fn(),
+      get: vi.fn().mockResolvedValue({ post: managedPost, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } }),
+      cancelScheduled: vi.fn().mockResolvedValue(undefined), ...overrides };
+  }
+  async function openCancel(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("button", { name: `Opções de ${managedPost.title}` }));
+    await user.click(screen.getByRole("menuitem", { name: "Cancelar agendamento" }));
+    return screen.getByRole("dialog", { name: "Excluir agendamento?" });
+  }
+
+  it("does not cancel from opening, dismissal or Escape before confirmation", async () => {
+    const user = userEvent.setup();
+    const repository = source();
+    render(<App repository={repository} />);
+    await openCancel(user);
+    expect(repository.cancelScheduled).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+    await openCancel(user);
+    await user.keyboard("{Escape}");
+    expect(repository.cancelScheduled).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText(managedPost.title!)).toBeInTheDocument();
+  });
+
+  it("confirms once, waits for the authoritative response and removes from list/count/calendar/next post", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<void>();
+    const repository = source({ cancelScheduled: vi.fn().mockReturnValue(pending.promise) });
+    render(<App repository={repository} />);
+    await openCancel(user);
+    const confirm = screen.getByRole("button", { name: "Confirmar cancelamento" });
+    act(() => { fireEvent.click(confirm); fireEvent.click(confirm); });
+    expect(repository.cancelScheduled).toHaveBeenCalledTimes(1);
+    expect(repository.cancelScheduled).toHaveBeenCalledWith(managedPost.id);
+    expect(screen.getByText(managedPost.title!, { selector: "strong" })).toBeInTheDocument();
+    await act(async () => { pending.resolve(); await pending.promise; });
+    expect(await screen.findByRole("status")).toHaveTextContent(/cancelado com sucesso/i);
+    expect(screen.queryByText(managedPost.title!)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Todos/ })).toHaveTextContent("0");
+    await user.click(within(screen.getByRole("navigation", { name: "Navegação principal" })).getByRole("button", { name: /Agenda/ }));
+    expect(screen.queryByText(managedPost.title!)).not.toBeInTheDocument();
+    expect(screen.getAllByText("Livre")).toHaveLength(7);
+    await user.click(screen.getByRole("button", { name: /Visão geral/ }));
+    expect(screen.getByText("Nenhuma publicação agendada")).toBeInTheDocument();
+    expect(screen.getByText("Publicações", { selector: ".metric-card p" }).closest("article")).toHaveTextContent("0");
+  });
+
+  it.each([403, 404, 409, 500, "network"])("keeps the post on cancellation failure %s without claiming success", async (status) => {
+    const user = userEvent.setup();
+    const failure = status === "network" ? new Error("DO_NOT_ECHO") : new HttpError(new Response(null, { status: Number(status) }), "https://api.test", { message: "DO_NOT_ECHO" });
+    const repository = source({ cancelScheduled: vi.fn().mockRejectedValue(failure) });
+    render(<App repository={repository} />);
+    await openCancel(user);
+    await user.click(screen.getByRole("button", { name: "Confirmar cancelamento" }));
+    const dialog = screen.getByRole("dialog");
+    expect(await within(dialog).findByRole("alert")).not.toHaveTextContent(/DO_NOT_ECHO|sucesso/);
+    if (status === 403 || status === 409) expect(within(dialog).getByRole("alert")).toHaveTextContent(/detalhes/i);
+    if (status === "network") expect(within(dialog).getByRole("alert")).toHaveTextContent(/não foi possível confirmar/i);
+    expect(screen.getByText(managedPost.title!, { selector: "strong" })).toBeInTheDocument();
+  });
+
+  it("ignores old lists resolving after confirmed cancellation", async () => {
+    const user = userEvent.setup();
+    const oldList = deferred<Post[]>();
+    const list = vi.fn().mockReturnValueOnce(oldList.promise).mockResolvedValue([]);
+    const repository = source({ list });
+    window.location.hash = `#/publicacoes/${managedPost.id}`;
+    render(<App repository={repository} />);
+    await user.click(await screen.findByRole("button", { name: "Cancelar agendamento" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar cancelamento" }));
+    await screen.findByText(/cancelado com sucesso/i);
+    await act(async () => { oldList.resolve([managedPost]); await oldList.promise; });
+    await user.click(screen.getByRole("button", { name: /Publicações/ }));
+    expect(screen.queryByText(managedPost.title!)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Todos/ })).toHaveTextContent("0");
+  });
+
+  it("keeps tombstones even when a subsequent list returns the pre-cancellation post", async () => {
+    const user = userEvent.setup();
+    const repository = source();
+    render(<App repository={repository} />);
+    await openCancel(user);
+    await user.click(screen.getByRole("button", { name: "Confirmar cancelamento" }));
+    await screen.findByText(/cancelado com sucesso/i);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByText(managedPost.title!)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Todos/ })).toHaveTextContent("0");
+  });
+
+  it.each(["success", "401"])("ignores late cancellation %s after Workspace remount", async (outcome) => {
+    const user = userEvent.setup();
+    const pending = deferred<void>();
+    const tenantB = { ...demoAuthSession.tenant, id: uuid(840), name: "Workspace B", slug: "workspace-b" };
+    const authRepository = new MockAuthRepository(demoAuthSession, [
+      { tenantId: demoAuthSession.tenant.id, name: demoAuthSession.tenant.name, slug: demoAuthSession.tenant.slug, role: "owner", selected: true },
+      { tenantId: tenantB.id, name: tenantB.name, slug: tenantB.slug, role: "owner", selected: false },
+    ]);
+    const postB = { ...managedPost, tenantId: tenantB.id, title: "Post do Workspace B" };
+    const repository = source({ list: vi.fn().mockResolvedValueOnce([managedPost]).mockResolvedValue([postB]), cancelScheduled: vi.fn().mockReturnValue(pending.promise) });
+    render(<App authRepository={authRepository} initialAuthSession={demoAuthSession} repository={repository} />);
+    await openCancel(user);
+    await user.click(screen.getByRole("button", { name: "Confirmar cancelamento" }));
+    fireEvent.change(await screen.findByLabelText("Workspace ativo"), { target: { value: tenantB.id } });
+    expect(await screen.findByText("Post do Workspace B")).toBeInTheDocument();
+    await act(async () => { if (outcome === "success") pending.resolve(); else pending.reject(new HttpError(new Response(null, { status: 401 }), "https://api.test", null)); });
+    expect(screen.getByText("Post do Workspace B")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /Entrar/ })).not.toBeInTheDocument();
+  });
+
+  it("scopes cancellation tombstones and pending callbacks to the repository", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<void>();
+    const first = source({ cancelScheduled: vi.fn().mockReturnValue(pending.promise) });
+    const second = source();
+    const view = render(<App repository={first} />);
+    await openCancel(user);
+    await user.click(screen.getByRole("button", { name: "Confirmar cancelamento" }));
+    view.rerender(<App repository={second} />);
+    await screen.findByText(managedPost.title!, { selector: "strong" });
+    await act(async () => { pending.resolve(); await pending.promise; });
+    expect(screen.getByText(managedPost.title!, { selector: "strong" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await openCancel(user);
+    await user.click(screen.getByRole("button", { name: "Confirmar cancelamento" }));
+    await screen.findByText(/cancelado com sucesso/i);
+    const third = source();
+    view.rerender(<App repository={third} />);
+    expect(await screen.findByText(managedPost.title!, { selector: "strong" })).toBeInTheDocument();
+  });
+
+  it.each(["before", "after"])("does not revive a cancelled post when returning to A %s late cancellation confirmation", async (returnOrder) => {
+    const user = userEvent.setup();
+    const originalListA = deferred<Post[]>();
+    const cancellation = deferred<void>();
+    const tenantB = { ...demoAuthSession.tenant, id: uuid(850), name: "Workspace B", slug: "workspace-b" };
+    const authRepository = new MockAuthRepository(demoAuthSession, [
+      { tenantId: demoAuthSession.tenant.id, name: demoAuthSession.tenant.name, slug: demoAuthSession.tenant.slug, role: "owner", selected: true },
+      { tenantId: tenantB.id, name: tenantB.name, slug: tenantB.slug, role: "owner", selected: false },
+    ]);
+    const postB = { ...managedPost, id: uuid(851), tenantId: tenantB.id, title: "Publicação preservada no B" };
+    const repository = source({
+      list: vi.fn().mockReturnValueOnce(originalListA.promise).mockResolvedValueOnce([postB]).mockResolvedValue([]),
+      get: vi.fn().mockResolvedValueOnce({ post: managedPost, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } })
+        .mockRejectedValue(new HttpError(new Response(null, { status: 404 }), "https://api.test", null)),
+      cancelScheduled: vi.fn().mockReturnValue(cancellation.promise),
+    });
+    window.location.hash = `#/publicacoes/${managedPost.id}`;
+    render(<App authRepository={authRepository} initialAuthSession={demoAuthSession} repository={repository} />);
+    await user.click(await screen.findByRole("button", { name: "Cancelar agendamento" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar cancelamento" }));
+    expect(repository.cancelScheduled).toHaveBeenCalledTimes(1);
+    fireEvent.change(await screen.findByLabelText("Workspace ativo"), { target: { value: tenantB.id } });
+    await waitFor(() => expect(screen.getByLabelText("Workspace ativo")).toHaveValue(tenantB.id));
+    await user.click(screen.getByRole("button", { name: /Publicações/ }));
+    expect(await screen.findByText(postB.title!)).toBeInTheDocument();
+    if (returnOrder === "before") {
+      fireEvent.change(screen.getByLabelText("Workspace ativo"), { target: { value: demoAuthSession.tenant.id } });
+      await waitFor(() => expect(screen.getByLabelText("Workspace ativo")).toHaveValue(demoAuthSession.tenant.id));
+      expect(screen.getByText("Carregando publicações")).toBeInTheDocument();
+    }
+    await act(async () => { cancellation.resolve(); await cancellation.promise; });
+    if (returnOrder === "after") {
+      expect(screen.getByText(postB.title!)).toBeInTheDocument();
+      expect(screen.queryByText(/cancelado com sucesso/i)).not.toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText("Workspace ativo"), { target: { value: demoAuthSession.tenant.id } });
+      await waitFor(() => expect(screen.getByLabelText("Workspace ativo")).toHaveValue(demoAuthSession.tenant.id));
+    }
+    await act(async () => { originalListA.resolve([managedPost]); await originalListA.promise; });
+    await screen.findByRole("button", { name: /Todos/ });
+    expect(screen.queryByText(managedPost.title!)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Todos/ })).toHaveTextContent("0");
+    expect(screen.queryByText(postB.title!)).not.toBeInTheDocument();
+  });
+
+  it.each(["get", "cancel"])("invalidates the active session on %s401", async (operation) => {
+    const user = userEvent.setup();
+    const error = new HttpError(new Response(null, { status: 401 }), "https://api.test", null);
+    const repository = source(operation === "get" ? { get: vi.fn().mockRejectedValue(error) } : { cancelScheduled: vi.fn().mockRejectedValue(error) });
+    if (operation === "get") window.location.hash = `#/publicacoes/${managedPost.id}`;
+    render(<App repository={repository} />);
+    if (operation === "cancel") {
+      await openCancel(user);
+      await user.click(screen.getByRole("button", { name: "Confirmar cancelamento" }));
+    }
+    expect(await screen.findByRole("button", { name: "Entrar" })).toBeInTheDocument();
+  });
+
+  it("opens a prefilled editor from list and cancelling never creates or patches", async () => {
+    const user = userEvent.setup();
+    const repository = source();
+    render(<App repository={repository} />);
+    await user.click(await screen.findByRole("button", { name: `Opções de ${managedPost.title}` }));
+    await user.click(screen.getByRole("menuitem", { name: "Editar agendamento" }));
+    expect(await screen.findByRole("dialog", { name: "Editar agendamento" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Legenda")).toHaveValue(managedPost.caption);
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+    expect(repository.create).not.toHaveBeenCalled();
+    expect(repository.updateScheduled).not.toHaveBeenCalled();
+  });
+
+  async function openEditor(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("button", { name: `Opções de ${managedPost.title}` }));
+    await user.click(screen.getByRole("menuitem", { name: "Editar agendamento" }));
+    return screen.findByRole("dialog", { name: "Editar agendamento" });
+  }
+
+  it("PATCHes once and applies authoritative post to list, calendar and next post over a stale list", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<PostsRepository["get"]>>>();
+    const updated = { ...managedPost, title: "Título autorizado pelo servidor", caption: "Resposta autoritativa" };
+    const repository = source({ updateScheduled: vi.fn().mockReturnValue(pending.promise) });
+    render(<App repository={repository} />);
+    await openEditor(user);
+    fireEvent.change(screen.getByLabelText("Título"), { target: { value: "Título solicitado" } });
+    const save = screen.getByRole("button", { name: "Salvar alterações" });
+    act(() => { fireEvent.submit(save.closest("form")!); fireEvent.submit(save.closest("form")!); });
+    expect(repository.updateScheduled).toHaveBeenCalledExactlyOnceWith(managedPost.id, { title: "Título solicitado" });
+    await act(async () => pending.resolve({ post: updated, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(await screen.findByText(updated.title)).toBeInTheDocument();
+    expect(repository.create).not.toHaveBeenCalled();
+    await user.click(within(screen.getByRole("navigation", { name: "Navegação principal" })).getByRole("button", { name: /Agenda/ }));
+    expect(screen.getByText(updated.title)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Visão geral/ }));
+    expect(nextPostCard().getByText(updated.title)).toBeInTheDocument();
+  });
+
+  it("advances an edited overlay to newer authoritative list rows without regressing on a late stale list", async () => {
+    const user = userEvent.setup();
+    const original = { ...managedPost, updatedAt: "2026-10-18T10:00:00.000Z" };
+    const edited = { ...original, title: "Editado A", updatedAt: "2026-10-18T11:00:00.000Z" };
+    const published = { ...edited, title: "Publicado A", status: "published", publishedAt: "2026-10-18T12:00:00.000Z", updatedAt: "2026-10-18T12:00:00.000Z" } satisfies Post;
+    const postB = { ...original, id: uuid(885), title: "Cancelar B", scheduledFor: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString() };
+    const postC = { ...postB, id: uuid(886), title: "Cancelar C" };
+    const lateList = deferred<Post[]>();
+    const repository = source({
+      list: vi.fn().mockResolvedValueOnce([original, postB, postC])
+        .mockResolvedValueOnce([original, postB, postC])
+        .mockResolvedValueOnce([published, postB, postC])
+        .mockReturnValueOnce(lateList.promise),
+      get: vi.fn().mockResolvedValue({ post: original, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } }),
+      updateScheduled: vi.fn().mockResolvedValue({ post: edited, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } }),
+    });
+    render(<App repository={repository} />);
+    await openEditor(user);
+    fireEvent.change(screen.getByLabelText("Título"), { target: { value: edited.title } });
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    expect(await screen.findByText(edited.title)).toBeInTheDocument();
+
+    const cancel = async (title: string) => {
+      await user.click(screen.getByRole("button", { name: `Opções de ${title}` }));
+      await user.click(screen.getByRole("menuitem", { name: "Cancelar agendamento" }));
+      await user.click(screen.getByRole("button", { name: "Confirmar cancelamento" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    };
+    const assertPublished = async () => {
+      const row = (await screen.findByText(published.title)).closest("article")!;
+      expect(within(row).getByText("Publicado")).toBeInTheDocument();
+      await user.click(within(row).getByRole("button", { name: `Opções de ${published.title}` }));
+      expect(screen.queryByRole("menuitem", { name: "Editar agendamento" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: "Cancelar agendamento" })).not.toBeInTheDocument();
+      await user.keyboard("{Escape}");
+      await user.click(within(screen.getByRole("navigation", { name: "Navegação principal" })).getByRole("button", { name: /Agenda/ }));
+      expect(screen.getByText(published.title)).toBeInTheDocument();
+      expect(screen.queryByText(edited.title)).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: /Visão geral/ }));
+    };
+
+    await cancel(postB.title);
+    await assertPublished();
+    expect(nextPostCard().getByText(postC.title)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Publicações/ }));
+    await cancel(postC.title);
+    await act(async () => { lateList.resolve([original, postB, postC]); await lateList.promise; });
+    expect(screen.queryByText(postB.title)).not.toBeInTheDocument();
+    expect(screen.queryByText(postC.title)).not.toBeInTheDocument();
+    await assertPublished();
+    expect(nextPostCard().getByText("Nenhuma publicação agendada")).toBeInTheDocument();
+  });
+
+  it.each([403, 409])("preserves the editor text on PATCH %s and offers details without false success", async (status) => {
+    const user = userEvent.setup();
+    const repository = source({ updateScheduled: vi.fn().mockRejectedValue(new HttpError(new Response(null, { status }), "https://api.test", null)) });
+    render(<App repository={repository} />);
+    await openEditor(user);
+    fireEvent.change(screen.getByLabelText("Legenda"), { target: { value: "Não perder esta revisão" } });
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    expect(await within(screen.getByRole("dialog")).findByRole("alert")).toHaveTextContent(/permissão|mudou/i);
+    expect(screen.getByLabelText("Legenda")).toHaveValue("Não perder esta revisão");
+    expect(screen.queryByText(/sucesso/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /detalhes/i })).toHaveAttribute("href", `#/publicacoes/${managedPost.id}`);
+  });
+
+  it("asks the user to choose a future date when PATCH rejects an expired scheduledFor", async () => {
+    const user = userEvent.setup();
+    const expiredSchedule = new HttpError(new Response(null, { status: 400 }), "https://api.test", {
+      error: { code: "invalid_post", fields: ["scheduledFor"], message: "DO_NOT_ECHO" },
+    });
+    const repository = source({ updateScheduled: vi.fn().mockRejectedValue(expiredSchedule) });
+    render(<App repository={repository} />);
+    await openEditor(user);
+    fireEvent.change(screen.getByLabelText("Título"), { target: { value: "Título preservado" } });
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    const alert = await within(screen.getByRole("dialog")).findByRole("alert");
+    expect(alert).toHaveTextContent(/data do agendamento.*passou.*nova data futura/i);
+    expect(alert).not.toHaveTextContent("DO_NOT_ECHO");
+    expect(screen.getByLabelText("Título")).toHaveValue("Título preservado");
+  });
+
+  it("does not close or reinitialize a draft revised while PATCH was pending", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<PostsRepository["get"]>>>();
+    const repository = source({ updateScheduled: vi.fn().mockReturnValue(pending.promise) });
+    render(<App repository={repository} />);
+    await openEditor(user);
+    fireEvent.change(screen.getByLabelText("Legenda"), { target: { value: "Enviada" } });
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    fireEvent.change(screen.getByLabelText("Legenda"), { target: { value: "Revisão mais nova" } });
+    await act(async () => pending.resolve({ post: { ...managedPost, caption: "Enviada" }, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } }));
+    expect(screen.getByLabelText("Legenda")).toHaveValue("Revisão mais nova");
+    expect(screen.getByRole("button", { name: "Salvar alterações" })).toBeEnabled();
+  });
+
+  it("can save a newer revision that reverted to the pre-save text after authoritative PATCH success", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<PostsRepository["get"]>>>();
+    const repository = source({ updateScheduled: vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue({ post: managedPost, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } }) });
+    render(<App repository={repository} />);
+    await openEditor(user);
+    fireEvent.change(screen.getByLabelText("Legenda"), { target: { value: "Texto enviado" } });
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    fireEvent.change(screen.getByLabelText("Legenda"), { target: { value: managedPost.caption } });
+    await act(async () => pending.resolve({ post: { ...managedPost, caption: "Texto enviado" }, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } }));
+    expect(screen.getByLabelText("Legenda")).toHaveValue(managedPost.caption);
+    expect(screen.getByRole("button", { name: "Salvar alterações" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    expect(repository.updateScheduled).toHaveBeenLastCalledWith(managedPost.id, { caption: managedPost.caption });
+  });
+
+  it.each(["success", "error"])("late PATCH %s does not replace or close a reopened editor", async (outcome) => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<PostsRepository["get"]>>>();
+    const repository = source({ updateScheduled: vi.fn().mockReturnValue(pending.promise) });
+    render(<App repository={repository} />);
+    await openEditor(user);
+    fireEvent.change(screen.getByLabelText("Legenda"), { target: { value: "Antiga" } });
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+    await openEditor(user);
+    fireEvent.change(screen.getByLabelText("Legenda"), { target: { value: "Reaberta" } });
+    expect(screen.getByRole("button", { name: "Salvar alterações" })).toBeDisabled();
+    await act(async () => { if (outcome === "success") pending.resolve({ post: { ...managedPost, caption: "Antiga" }, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } });
+      else pending.reject(new HttpError(new Response(null, { status: 403 }), "https://api.test", null)); });
+    expect(screen.getByLabelText("Legenda")).toHaveValue("Reaberta");
+    expect(within(screen.getByRole("dialog")).queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Salvar alterações" })).toBeEnabled();
+  });
+
+  it.each(["success", "401"])("ignores a late editor GET %s after reopening a different post", async (outcome) => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<PostsRepository["get"]>>>();
+    const otherPost = { ...managedPost, id: uuid(880), title: "Outro agendamento", caption: "Texto do outro post" };
+    const repository = source({ list: vi.fn().mockResolvedValue([managedPost, otherPost]),
+      get: vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue({ post: otherPost, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } }) });
+    render(<App repository={repository} />);
+    await openEditor(user);
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+    await user.click(screen.getByRole("button", { name: `Opções de ${otherPost.title}` }));
+    await user.click(screen.getByRole("menuitem", { name: "Editar agendamento" }));
+    expect(await screen.findByLabelText("Legenda")).toHaveValue(otherPost.caption);
+    await act(async () => { if (outcome === "success") pending.resolve({ post: managedPost, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } });
+      else pending.reject(new HttpError(new Response(null, { status: 401 }), "https://api.test", null)); });
+    expect(screen.getByLabelText("Legenda")).toHaveValue(otherPost.caption);
+    expect(screen.queryByRole("button", { name: "Entrar" })).not.toBeInTheDocument();
+  });
+
+  it.each(["success", "401"])("ignores late PATCH %s in another Workspace", async (outcome) => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<PostsRepository["get"]>>>();
+    const tenantB = { ...demoAuthSession.tenant, id: uuid(881), name: "Workspace B", slug: "workspace-b" };
+    const authRepository = new MockAuthRepository(demoAuthSession, [
+      { tenantId: demoAuthSession.tenant.id, name: demoAuthSession.tenant.name, slug: demoAuthSession.tenant.slug, role: "owner", selected: true },
+      { tenantId: tenantB.id, name: tenantB.name, slug: tenantB.slug, role: "owner", selected: false },
+    ]);
+    const postB = { ...managedPost, id: uuid(882), tenantId: tenantB.id, title: "Agendamento do B" };
+    const repository = source({ list: vi.fn().mockResolvedValueOnce([managedPost]).mockResolvedValue([postB]),
+      get: vi.fn(async (id: string) => ({ post: id === postB.id ? postB : managedPost, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } })),
+      updateScheduled: vi.fn().mockReturnValue(pending.promise) });
+    render(<App authRepository={authRepository} initialAuthSession={demoAuthSession} repository={repository} />);
+    await openEditor(user);
+    fireEvent.change(screen.getByLabelText("Legenda"), { target: { value: "Enviada no A" } });
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    fireEvent.change(await screen.findByLabelText("Workspace ativo"), { target: { value: tenantB.id } });
+    await screen.findByText(postB.title!);
+    await user.click(screen.getByRole("button", { name: `Opções de ${postB.title}` }));
+    await user.click(screen.getByRole("menuitem", { name: "Editar agendamento" }));
+    fireEvent.change(await screen.findByLabelText("Legenda"), { target: { value: "Rascunho preservado no B" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Salvar alterações" })).toBeEnabled());
+    await act(async () => { if (outcome === "success") pending.resolve({ post: { ...managedPost, title: "Somente A" }, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } });
+      else pending.reject(new HttpError(new Response(null, { status: 401 }), "https://api.test", null)); });
+    expect(screen.getByText(postB.title!)).toBeInTheDocument();
+    expect(screen.queryByText("Somente A")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Legenda")).toHaveValue("Rascunho preservado no B");
+    expect(screen.queryByText(/atualizado com sucesso/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Entrar" })).not.toBeInTheDocument();
+  });
+
+  it.each(["before", "after"])("retains authoritative updates when returning to A %s a late PATCH and ignores the old A list", async (returnOrder) => {
+    const user = userEvent.setup();
+    const oldList = deferred<Post[]>();
+    const pending = deferred<Awaited<ReturnType<PostsRepository["get"]>>>();
+    const tenantB = { ...demoAuthSession.tenant, id: uuid(883), name: "Workspace B", slug: "workspace-b" };
+    const authRepository = new MockAuthRepository(demoAuthSession, [
+      { tenantId: demoAuthSession.tenant.id, name: demoAuthSession.tenant.name, slug: demoAuthSession.tenant.slug, role: "owner", selected: true },
+      { tenantId: tenantB.id, name: tenantB.name, slug: tenantB.slug, role: "owner", selected: false },
+    ]);
+    const postB = { ...managedPost, id: uuid(884), tenantId: tenantB.id, title: "Preservado B" };
+    const updated = { ...managedPost, title: "Atualização autoritativa A" };
+    const repository = source({ list: vi.fn().mockReturnValueOnce(oldList.promise).mockResolvedValueOnce([postB]).mockResolvedValue([updated]),
+      updateScheduled: vi.fn().mockReturnValue(pending.promise) });
+    window.location.hash = `#/publicacoes/${managedPost.id}`;
+    render(<App authRepository={authRepository} initialAuthSession={demoAuthSession} repository={repository} />);
+    await user.click(await screen.findByRole("button", { name: "Editar agendamento" }));
+    fireEvent.change(await screen.findByLabelText("Título"), { target: { value: updated.title } });
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    fireEvent.change(await screen.findByLabelText("Workspace ativo"), { target: { value: tenantB.id } });
+    await waitFor(() => expect(screen.getByLabelText("Workspace ativo")).toHaveValue(tenantB.id));
+    await user.click(screen.getByRole("button", { name: /Publicações/ }));
+    await screen.findByText(postB.title!);
+    if (returnOrder === "before") {
+      fireEvent.change(screen.getByLabelText("Workspace ativo"), { target: { value: demoAuthSession.tenant.id } });
+      await waitFor(() => expect(screen.getByLabelText("Workspace ativo")).toHaveValue(demoAuthSession.tenant.id));
+      expect(screen.getByText("Carregando publicações")).toBeInTheDocument();
+    }
+    await act(async () => pending.resolve({ post: updated, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } }));
+    if (returnOrder === "after") {
+      expect(screen.getByText(postB.title!)).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText("Workspace ativo"), { target: { value: demoAuthSession.tenant.id } });
+      await waitFor(() => expect(screen.getByLabelText("Workspace ativo")).toHaveValue(demoAuthSession.tenant.id));
+    }
+    await act(async () => oldList.resolve([managedPost]));
+    expect(await screen.findByText(updated.title!)).toBeInTheDocument();
+    expect(screen.queryByText(managedPost.title!)).not.toBeInTheDocument();
+    expect(screen.queryByText(postB.title!)).not.toBeInTheDocument();
+  });
+
+  it("does not apply a late PATCH overlay to a replacement repository", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<PostsRepository["get"]>>>();
+    const first = source({ updateScheduled: vi.fn().mockReturnValue(pending.promise) });
+    const second = source();
+    const view = render(<App repository={first} />);
+    await openEditor(user);
+    fireEvent.change(screen.getByLabelText("Legenda"), { target: { value: "Do repositório antigo" } });
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    view.rerender(<App repository={second} />);
+    await screen.findByText(managedPost.title!, { selector: "strong" });
+    await act(async () => pending.resolve({ post: { ...managedPost, title: "Não aplicar" }, publications: [], permissions: { canEditSchedule: true, canCancelSchedule: true } }));
+    expect(screen.getByText(managedPost.title!, { selector: "strong" })).toBeInTheDocument();
+    expect(screen.queryByText("Não aplicar")).not.toBeInTheDocument();
   });
 });

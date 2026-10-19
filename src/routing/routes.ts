@@ -26,8 +26,15 @@ export const notFoundTitle: PageTitle = {
   description: "O endereço informado não existe no SocialFlow.",
 };
 
+export const postDetailsPath = "/publicacoes/:postId";
+export const postDetailsTitle: PageTitle = {
+  eyebrow: "PUBLICAÇÕES",
+  title: "Detalhes da publicação",
+  description: "Consulte o agendamento e o resultado de cada destino.",
+};
+
 export function getNavKey(location: Partial<Location> | string): NavKey | null {
-  const matches = matchRoutes(navigationRoutes, location);
+  const matches = matchRoutes([...navigationRoutes, { navKey: "posts" as const, path: postDetailsPath }], location);
 
   return matches?.at(-1)?.route.navKey ?? null;
 }

@@ -87,9 +87,14 @@ function createAuthRepository(
 
 function createPostsRepository(): PostsRepository {
   return {
+    ...postManagementMethods(),
     create: vi.fn(),
     list: vi.fn().mockResolvedValue(initialPosts),
   };
+}
+
+function postManagementMethods() {
+  return { get: vi.fn<PostsRepository["get"]>(), updateScheduled: vi.fn<PostsRepository["updateScheduled"]>(), cancelScheduled: vi.fn<PostsRepository["cancelScheduled"]>() };
 }
 
 function createAuthSyncBus() {
@@ -444,7 +449,7 @@ describe("autenticação no frontend", () => {
       .fn<PostsRepository["list"]>()
       .mockResolvedValueOnce(initialPosts)
       .mockImplementationOnce(() => pendingPostsB.promise);
-    const postsRepository: PostsRepository = { create: vi.fn(), list };
+    const postsRepository: PostsRepository = { ...postManagementMethods(), create: vi.fn(), list };
     render(
       <App
         authRepository={authRepository}
@@ -581,7 +586,7 @@ describe("autenticação no frontend", () => {
       <App
         authRepository={authRepository}
         initialAuthSession={session}
-        repository={{ create: vi.fn(), list }}
+        repository={{ ...postManagementMethods(), create: vi.fn(), list }}
       />,
     );
 

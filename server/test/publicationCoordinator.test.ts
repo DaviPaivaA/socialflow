@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Pool, PoolClient } from "pg";
 import { PublicationCoordinator } from "../src/publicationCoordinator.ts";
 import { PublicationError, PublicationOperationalError } from "../src/publicationErrors.ts";
 import { PostgresPostPublicationsRepository, type ClaimedPublication, type PostPublicationsRepository } from "../src/postPublicationsRepository.ts";
@@ -407,6 +408,69 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication coordinator (Postgr
 
     expect((await repository.listForPost(post.tenantId, post.postId)).map(row => row.status)).toEqual(["published", "published"]);
     expect(publish).toHaveBeenCalledTimes(2);
+  });
+
+  it("finishes an already locked aggregate before a due fill and preserves the lagging-clock cutoff", async () => {
+    const post = await fixture.post(3);
+    let announceAggregateLock!: () => void; let releaseAggregate!: () => void;
+    const aggregateHeld = new Promise<void>(resolve => { announceAggregateLock = resolve; });
+    const aggregateMayFinish = new Promise<void>(resolve => { releaseAggregate = resolve; });
+    let intercepted = false;
+    const pool = Object.create(fixture.pool) as Pool;
+    pool.query = fixture.pool.query.bind(fixture.pool);
+    pool.connect = (async () => {
+      const client = await fixture.pool.connect();
+      const proxy = Object.create(client) as PoolClient;
+      const query = client.query.bind(client);
+      proxy.query = (async (...args: unknown[]) => {
+        const result = await (query as (...args: unknown[]) => Promise<unknown>)(...args);
+        if (!intercepted && typeof args[0] === "string" && args[0].includes("SELECT id,status FROM posts")) {
+          intercepted = true;
+          announceAggregateLock();
+          await aggregateMayFinish; // Real post lock remains held on this independent client.
+        }
+        return result;
+      }) as typeof client.query;
+      proxy.release = client.release.bind(client);
+      return proxy;
+    }) as typeof pool.connect;
+    const realRepository = new PostgresPostPublicationsRepository(pool);
+    const [stale] = await realRepository.claimPost(post.tenantId, post.postId, now, 1);
+    const selectedRepository = Object.create(realRepository) as PostgresPostPublicationsRepository;
+    let firstClaim: Promise<ClaimedPublication[]> | undefined;
+    selectedRepository.claimDue = (cutoff, limit) => {
+      const result = realRepository.claimDue(cutoff, limit);
+      firstClaim ??= result;
+      return result;
+    };
+    const dispatched: string[] = []; const statusesAtDispatch: string[] = [];
+    const runner = coordinator(async target => {
+      dispatched.push(target.id);
+      statusesAtDispatch.push((await realRepository.listForPost(target.tenantId, target.postId)).find(row => row.id === target.id)!.status);
+      await realRepository.markPublished({ ...target, providerPostId: `page_${target.id}`, publishedAt: now });
+    }, { now: () => new Date(now.getTime() - 60_000) }, selectedRepository);
+    const sweeping = runner.failStale(new Date(now.getTime() + 600_001));
+    void sweeping.catch(() => {});
+    let tick: Promise<void> | undefined; let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([aggregateHeld, sweeping.then(() => { throw new Error("Sweep missed the aggregate lock barrier."); }),
+        new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Aggregate lock barrier not reached.")), 2_000); })]);
+      tick = runner.publishDueBatch(now);
+      void tick.catch(() => {});
+      // Old sequencing starts this SQL immediately; finish that SKIP LOCKED attempt while
+      // the aggregate is fenced. Correct sequencing has not opened a claim transaction yet.
+      if (firstClaim) await firstClaim;
+      releaseAggregate();
+      await Promise.all([sweeping, tick]);
+      await runner.whenIdle();
+      expect(dispatched.sort()).toEqual(post.publications.filter(target => target.id !== stale.id).map(target => target.id).sort());
+      expect(statusesAtDispatch).toEqual(["publishing", "publishing"]);
+      expect((await realRepository.listForPost(post.tenantId, post.postId)).map(row => row.status).sort())
+        .toEqual(["failed", "published", "published"]);
+    } finally {
+      clearTimeout(timeout); releaseAggregate(); await sweeping.catch(() => {}); await tick?.catch(() => {});
+      await runner.whenIdle();
+    }
   });
 
   it("refreshes an immediate post after its next tenant-scoped claim fails", async () => {

@@ -31,7 +31,7 @@ export class PublicationCoordinator {
   private readonly options: PublicationCoordinatorOptions;
   private readonly inFlight = new Set<Promise<void>>();
   private readonly controllers = new Set<AbortController>();
-  private filling: Promise<void> | null = null;
+  private databaseWork: Promise<void> | null = null;
   private stopped = false;
   private nextClass: "scheduled" | "operation" = "scheduled";
 
@@ -46,8 +46,8 @@ export class PublicationCoordinator {
   }
 
   async whenIdle(): Promise<void> {
-    while (this.filling || this.inFlight.size) {
-      await Promise.allSettled([...(this.filling ? [this.filling] : []), ...this.inFlight]);
+    while (this.databaseWork || this.inFlight.size) {
+      await Promise.allSettled([...(this.databaseWork ? [this.databaseWork] : []), ...this.inFlight]);
     }
   }
 
@@ -66,10 +66,10 @@ export class PublicationCoordinator {
         publications = await this.repository.listForPost(tenantId, postId);
       }
     } catch (error) {
-      try { await this.repository.refreshPostAggregate(tenantId, postId, this.now()); } catch { /* Retain the original error. */ }
+      try { await this.refreshPostAggregate(tenantId, postId, this.now()); } catch { /* Retain the original error. */ }
       throw error;
     }
-    const post = await this.repository.refreshPostAggregate(tenantId, postId, this.now());
+    const post = await this.refreshPostAggregate(tenantId, postId, this.now());
     return { post, publications: await this.repository.listForPost(tenantId, postId) };
   }
 
@@ -90,20 +90,33 @@ export class PublicationCoordinator {
       const key = tenantId + ":" + postId;
       if (seen.has(key)) continue;
       seen.add(key);
-      try { await this.repository.refreshPostAggregate(tenantId, postId, now); }
+      try { await this.refreshPostAggregate(tenantId, postId, now); }
       catch (error) { failure ??= { reason: error }; }
     }
     if (failure) throw failure.reason;
     await this.reconcileAggregates(now);
   }
 
-  /** Serialize short acquisitions only: no external action waits behind another action. */
+  /** Avoid self-contention between short acquisitions and aggregate post locks in either direction.
+   * No DB transaction is open while waiting, and external provider actions never own this latch.
+   * PostgreSQL locks remain the authority across cancellation, other coordinators and processes.
+   */
+  private async withDatabaseWork<T>(work: () => Promise<T>): Promise<T> {
+    while (this.databaseWork) await this.databaseWork;
+    const running = work();
+    // Only this operation's caller receives its failure; queued independent work can still proceed.
+    this.databaseWork = running.then(() => {}, () => {});
+    try { return await running; } finally { this.databaseWork = null; }
+  }
+
   private async fill(now: Date, scope?: Scope): Promise<void> {
-    while (this.filling) await this.filling;
-    if (this.stopped) return;
-    const work = this.acquire(now, scope);
-    this.filling = work;
-    try { await work; } finally { this.filling = null; }
+    await this.withDatabaseWork(async () => {
+      if (!this.stopped) await this.acquire(now, scope);
+    });
+  }
+
+  private refreshPostAggregate(tenantId: string, postId: string, now: Date) {
+    return this.withDatabaseWork(() => this.repository.refreshPostAggregate(tenantId, postId, now));
   }
 
   private async acquire(now: Date, scope?: Scope): Promise<void> {
@@ -169,7 +182,7 @@ export class PublicationCoordinator {
         catch { /* Keep uncertain persistence for reconciliation, never resend. */ }
       }
     } finally {
-      try { await this.repository.refreshPostAggregate(target.tenantId, target.postId, this.now()); }
+      try { await this.refreshPostAggregate(target.tenantId, target.postId, this.now()); }
       catch { /* The next durable aggregate sweep repairs this independently. */ }
     }
   }
@@ -178,7 +191,7 @@ export class PublicationCoordinator {
     const candidates = await this.repository.listAggregateRefreshCandidates(this.options.batchSize ?? DEFAULT_BATCH_SIZE);
     let failure: { reason: unknown } | null = null;
     for (const { tenantId, postId } of candidates) {
-      try { await this.repository.refreshPostAggregate(tenantId, postId, now); }
+      try { await this.refreshPostAggregate(tenantId, postId, now); }
       catch (error) { failure ??= { reason: error }; }
     }
     if (failure) throw failure.reason;

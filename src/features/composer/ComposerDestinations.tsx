@@ -24,5 +24,9 @@ export function ComposerDestinations({ destinations, onToggle }: ComposerDestina
         <span>{page.provider === "facebook" ? `Facebook — ${page.displayName}` : `Instagram — ${page.username ? `@${page.username}` : page.displayName}`}</span>
       </label>)}
     </div> : null}
+    {!destinations.isLoading && destinations.unavailableSelectedIds.map((id) => <div className="composer-unavailable-selection" key={id}>
+      <p>Conta selecionada indisponível — {id}. Remova a seleção ou reconecte em Canais.</p>
+      <button type="button" onClick={() => onToggle(id)}>Remover conta {id}</button>
+    </div>)}
   </section>;
 }

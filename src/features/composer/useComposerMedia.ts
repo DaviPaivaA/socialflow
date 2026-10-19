@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import type { MediaAsset, MediaType } from "../../../shared/mediaContract";
 import type { MediaAssetsRepository } from "../../data/media/MediaAssetsRepository";
 
@@ -11,6 +11,7 @@ type MediaState = {
   isUploadingMedia: boolean;
   mediaAssets: MediaAsset[];
   selectedMediaAsset: MediaAsset | null;
+  selectedMediaAssetId: string | null;
   temporaryPreview: ComposerMediaPreview;
 };
 
@@ -33,7 +34,7 @@ function listWhilePending(repository: MediaAssetsRepository, workspaceId: string
   return pending;
 }
 
-function blankState(workspaceId: string): MediaState {
+function blankState(workspaceId: string, initialMediaAssetId: string | null = null): MediaState {
   return {
     workspaceId,
     error: null,
@@ -41,6 +42,7 @@ function blankState(workspaceId: string): MediaState {
     isUploadingMedia: false,
     mediaAssets: [],
     selectedMediaAsset: null,
+    selectedMediaAssetId: initialMediaAssetId,
     temporaryPreview: null,
   };
 }
@@ -54,12 +56,14 @@ function mergeAssets(listed: MediaAsset[], existing: MediaAsset[]): MediaAsset[]
   });
 }
 
-export function useComposerMedia({ repository, workspaceId, onDraftChange }: {
+export function useComposerMedia({ repository, workspaceId, onDraftChange, initialMediaAssetId = null }: {
   repository: MediaAssetsRepository;
   workspaceId: string;
   onDraftChange: () => void;
+  initialMediaAssetId?: string | null;
 }) {
-  const [state, setState] = useState<MediaState>(() => blankState(workspaceId));
+  const readInitialSelection = useEffectEvent(() => initialMediaAssetId);
+  const [state, setState] = useState<MediaState>(() => blankState(workspaceId, initialMediaAssetId));
   const generation = useRef(0);
   const listVersion = useRef(0);
   const uploadVersion = useRef(0);
@@ -79,12 +83,12 @@ export function useComposerMedia({ repository, workspaceId, onDraftChange }: {
     void listWhilePending(repository, workspaceId).then(
       (listed) => {
         if (generation.current !== activeGeneration || listVersion.current !== version) return;
-        setState((current) => current.workspaceId === workspaceId ? {
-          ...current,
-          error: null,
-          isLoadingMedia: false,
-          mediaAssets: mergeAssets(listed, current.mediaAssets),
-        } : current);
+        setState((current) => {
+          if (current.workspaceId !== workspaceId) return current;
+          const mediaAssets = mergeAssets(listed, current.mediaAssets);
+          return { ...current, error: null, isLoadingMedia: false, mediaAssets,
+            selectedMediaAsset: mediaAssets.find((asset) => asset.id === current.selectedMediaAssetId) ?? null };
+        });
       },
       () => {
         if (generation.current !== activeGeneration || listVersion.current !== version) return;
@@ -98,12 +102,13 @@ export function useComposerMedia({ repository, workspaceId, onDraftChange }: {
   }, [repository, workspaceId]);
 
   useEffect(() => {
+    const initialId = readInitialSelection();
     const activeGeneration = ++generation.current;
     ++uploadVersion.current;
     revokeTemporaryUrl();
     queueMicrotask(() => {
       if (generation.current !== activeGeneration) return;
-      setState(blankState(workspaceId));
+      setState(blankState(workspaceId, initialId));
       load(activeGeneration);
     });
     return () => {
@@ -121,6 +126,7 @@ export function useComposerMedia({ repository, workspaceId, onDraftChange }: {
       ...current,
       isUploadingMedia: false,
       selectedMediaAsset: null,
+      selectedMediaAssetId: null,
       temporaryPreview: null,
     } : current);
     onDraftChange();
@@ -133,7 +139,7 @@ export function useComposerMedia({ repository, workspaceId, onDraftChange }: {
       if (current.workspaceId !== workspaceId) return current;
       const selected = current.mediaAssets.find((item) => item.id === asset.id);
       if (!selected) return current;
-      return { ...current, isUploadingMedia: false, selectedMediaAsset: selected, temporaryPreview: null };
+      return { ...current, isUploadingMedia: false, selectedMediaAsset: selected, selectedMediaAssetId: selected.id, temporaryPreview: null };
     });
     onDraftChange();
   }, [onDraftChange, revokeTemporaryUrl, workspaceId]);
@@ -162,6 +168,7 @@ export function useComposerMedia({ repository, workspaceId, onDraftChange }: {
         isUploadingMedia: false,
         mediaAssets: [uploaded, ...current.mediaAssets.filter((item) => item.id !== uploaded.id)],
         selectedMediaAsset: uploaded,
+        selectedMediaAssetId: uploaded.id,
         temporaryPreview: null,
       } : current);
       onDraftChange();
@@ -190,6 +197,8 @@ export function useComposerMedia({ repository, workspaceId, onDraftChange }: {
     mediaAssets: visible.mediaAssets,
     preview,
     selectedMediaAsset: visible.selectedMediaAsset,
+    selectedMediaAssetId: visible.selectedMediaAssetId,
+    initialSelectionUnavailable: !visible.isLoadingMedia && visible.selectedMediaAssetId !== null && visible.selectedMediaAsset === null,
     clearSelection,
     retryList,
     selectMedia,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Post } from "../../types/social";
-import { ApiClient } from "../api/apiClient";
+import { ApiClient, HttpError } from "../api/apiClient";
 import { HttpPostsRepository } from "./HttpPostsRepository";
 import type { CreatePostInput } from "./PostsRepository";
 
@@ -65,6 +65,51 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 describe("HttpPostsRepository", () => {
+  const detail = { ...createdResponse, permissions: { canEditSchedule: true, canCancelSchedule: true } };
+
+  it("loads validated detail using cookies and a single post request", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(detail));
+    await expect(createRepository(fetchMock).get(existingPost.id)).resolves.toEqual(detail);
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(`https://api.socialflow.example/posts/${existingPost.id}`, expect.objectContaining({ method: "GET", credentials: "include" }));
+  });
+
+  it.each([createdResponse, { ...detail, permissions: { canEditSchedule: true } },
+    { ...detail, publications: [{ ...publication, postId: PAGE_ID }] },
+    { ...detail, accessToken: "secret" }, null])("rejects malformed detail %j", async body => {
+    await expect(createRepository(vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body))).get(existingPost.id)).rejects.toThrow("detalhe");
+  });
+
+  it("PATCH sends present allowlisted fields only, preserving null and copying arrays without media fetches", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(detail));
+    const ids = [PAGE_ID]; const media = [MEDIA_ID];
+    const input = { title: null, socialAccountIds: ids, mediaAssetIds: media, tenantId: TENANT_ID, authorUserId: AUTHOR_ID, status: "published", role: "owner", publicationMode: "now" };
+    await expect(createRepository(fetchMock).updateScheduled(existingPost.id, input)).resolves.toEqual(detail);
+    ids.push(AUTHOR_ID); media.push(PAGE_ID);
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(`https://api.socialflow.example/posts/${existingPost.id}`, expect.objectContaining({ method: "PATCH", credentials: "include" }));
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toEqual({ title: null, socialAccountIds: [PAGE_ID], mediaAssetIds: [MEDIA_ID] });
+  });
+
+  it("PATCH preserves omitted fields and validates the returned envelope", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(createdResponse));
+    await expect(createRepository(fetchMock).updateScheduled(existingPost.id, { caption: "Changed" })).rejects.toThrow("detalhe");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toEqual({ caption: "Changed" });
+  });
+
+  it("DELETE accepts an empty 204 without parsing JSON", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 204 }));
+    await expect(createRepository(fetchMock).cancelScheduled(existingPost.id)).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(`https://api.socialflow.example/posts/${existingPost.id}`, expect.objectContaining({ method: "DELETE", credentials: "include" }));
+  });
+
+  it.each([401, 403, 404, 409])("preserves HttpError %i for every management operation", async status => {
+    for (const action of ["get", "updateScheduled", "cancelScheduled"] as const) {
+      const body = { error: { code: "specific_code", fields: ["scheduledFor"] } };
+      const repository = createRepository(vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body, status)));
+      const error = await repository[action](existingPost.id, { title: null }).catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(HttpError); expect(error).toMatchObject({ status, body });
+    }
+  });
+
   it("aceita uma listagem formada somente por posts oficiais válidos", async () => {
     const repository = createRepository(
       vi.fn<typeof fetch>().mockResolvedValue(jsonResponse([existingPost])),

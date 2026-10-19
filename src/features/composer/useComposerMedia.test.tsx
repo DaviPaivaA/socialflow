@@ -38,6 +38,36 @@ function mockObjectUrls() {
 }
 
 describe("useComposerMedia", () => {
+  it("resolves initial media metadata without fabricating an asset and never reapplies it after clear/retry", async () => {
+    const list = deferred<MediaAsset[]>();
+    const source = repository({ list: vi.fn().mockReturnValueOnce(list.promise).mockResolvedValue([assetA]) });
+    const { result } = renderHook(() => useComposerMedia({ repository: source, workspaceId: "workspace-a", initialMediaAssetId: assetA.id, onDraftChange: vi.fn() }));
+    expect(result.current.selectedMediaAssetId).toBe(assetA.id);
+    expect(result.current.selectedMediaAsset).toBeNull();
+    await waitFor(() => expect(source.list).toHaveBeenCalledTimes(1));
+    act(() => result.current.clearSelection());
+    await act(async () => list.resolve([assetA]));
+    expect(result.current.selectedMediaAssetId).toBeNull();
+    act(() => result.current.retryList());
+    await waitFor(() => expect(result.current.isLoadingMedia).toBe(false));
+    expect(result.current.selectedMediaAsset).toBeNull();
+  });
+
+  it("retains an unavailable initial ID and resolves metadata on retry without losing a later selection", async () => {
+    const source = repository({ list: vi.fn().mockResolvedValueOnce([]).mockResolvedValue([assetA, assetB]) });
+    const { result } = renderHook(() => useComposerMedia({ repository: source, workspaceId: "workspace-a", initialMediaAssetId: assetA.id, onDraftChange: vi.fn() }));
+    await waitFor(() => expect(result.current.isLoadingMedia).toBe(false));
+    expect(result.current.selectedMediaAssetId).toBe(assetA.id);
+    expect(result.current.initialSelectionUnavailable).toBe(true);
+    expect(result.current.selectedMediaAsset).toBeNull();
+    act(() => result.current.retryList());
+    await waitFor(() => expect(result.current.selectedMediaAsset).toEqual(assetA));
+    act(() => result.current.selectMedia(assetB));
+    act(() => result.current.retryList());
+    await waitFor(() => expect(result.current.isLoadingMedia).toBe(false));
+    expect(result.current.selectedMediaAssetId).toBe(assetB.id);
+  });
+
   it("compartilha listagem pendente no StrictMode, seleciona e remove uma mídia", async () => {
     const list = deferred<MediaAsset[]>();
     const source = repository({ list: vi.fn().mockReturnValue(list.promise) });

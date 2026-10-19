@@ -17,6 +17,8 @@ no GitHub Pages.
 - listagem e troca explícita de Workspace para usuários com múltiplos memberships;
 - isolamento de publicações pelo tenant autenticado;
 - filtros por status;
+- detalhe por URL, edição parcial e cancelamento lógico de agendamentos;
+- pesquisa nos posts do Workspace, Ajuda local e Notificações com vazio verdadeiro;
 - gráficos e métricas;
 - contas sociais persistidas e isoladas por Workspace;
 - configurações e automações simuladas;
@@ -83,6 +85,12 @@ leitura autenticada de `GET /posts` no PostgreSQL.
 
 ## Executar o backend compilado
 
+Para atualizar uma instalação 6E com gerenciamento de agendamentos, siga o
+[procedimento manual e rollback controlado](docs/scheduled-post-management.md#verificação-e-futura-atualização-manual-do-debian).
+Esta funcionalidade não adiciona migration; nunca misture schedulers antigos e
+novos nem volte cegamente ao backend antigo após usuários editarem/cancelarem.
+Os comandos de instalação abaixo não substituem essa janela coordenada.
+
 No Debian de produção, configure `NODE_ENV=production`, uma `CORS_ORIGIN`
 explícita, `SESSION_COOKIE_SECURE=true` e os demais valores reais no ambiente.
 Depois execute:
@@ -148,7 +156,10 @@ cookie `SameSite=Lax` permaneça first-party. A API oferece:
   de autorização Meta;
 - `GET /auth/meta/callback`, que consome o state e conclui a descoberta no
   backend;
-- `GET /posts`, que lista os posts do tenant autenticado;
+- `GET /posts`, que lista os posts do tenant autenticado, exceto cancelados;
+- `GET /posts/:id`, detalhe seguro com resultados e permissões, inclusive cancelados;
+- `PATCH /posts/:id`, edição parcial de agendamento nunca iniciado;
+- `DELETE /posts/:id`, cancelamento lógico persistente (204), sem apagar histórico;
 - `POST /posts`, que cria o Post e seus destinos com tenant e autor autenticados,
   e publica imediatamente quando `publicationMode` é `now`;
 - `GET /social-accounts`, que lista as contas do Workspace autenticado;
@@ -162,6 +173,17 @@ cookie `SameSite=Lax` permaneça first-party. A API oferece:
 - `GET /media-assets/:id/content` e `HEAD /media-assets/:id/content`, leitura
   privada e autenticada do arquivo para preview; `GET` aceita um byte range para
   reprodução de vídeo (`206` ou `416`).
+
+### Gerenciamento de agendamentos
+
+A interface usa `#/publicacoes/:postId` para detalhes. Owner/admin gerenciam
+agendamentos do Workspace; member somente os próprios. Qualquer claim, tentativa
+ou operação impede edição/cancelamento; published é somente leitura. DELETE
+não exclui conteúdo nas redes e PATCH não restaura cancelados. Legado sem destinos
+é preservado quando PATCH omite destinos, sem backfill/envio implícito.
+Não há ledger completo de versões/atores nem conflito editorial por versão.
+Veja [contratos, segurança, limites e roteiro manual](docs/scheduled-post-management.md)
+e o [handoff de execução](HANDOFF.md) para evidências e gates ainda pendentes.
 
 ### Mídia local — Etapa 6A
 
@@ -758,14 +780,17 @@ cobertura:
 npm run test:integration
 ```
 
-O script explícito de integração inclui todos os 15 arquivos PostgreSQL,
-inclusive `facebookPublishingService.integration.ts`, os novos integrations 6E
+O script explícito de integração inclui 18 arquivos PostgreSQL: os 15 originais
+e `postManagement.integration.ts`, `postManagementConcurrency.integration.ts` e
+`postManagementHttp.integration.ts`. Inclui
+`facebookPublishingService.integration.ts`, os integrations 6E
 e `postPublicationsRepository.test.ts`/`publicationCoordinator.test.ts`. Cobre
 claims/leases, crashes/retomada sem reenvio, capabilities/range/isolamento e
 migration fresh/upgrade 010→011/segunda execução do runner em schemas próprios.
 
-Sem `TEST_DATABASE_URL`, os testes do frontend e do contrato do backend rodam
-normalmente e a integração PostgreSQL é explicitamente marcada como ignorada.
+Sem `TEST_DATABASE_URL`, os testes do frontend e do contrato do backend não
+dependem de PostgreSQL; integrações antigas podem ser ignoradas, mas as novas
+fixtures de gestão falham explicitamente para impedir falsa aprovação.
 **Skips não constituem aprovação de regressão/deploy**: os gates exigem banco
 `_test` distinto da produção e todos os testes PostgreSQL realmente executados,
 zero skips. Nunca execute migrations de teste com `DATABASE_URL` de produção.

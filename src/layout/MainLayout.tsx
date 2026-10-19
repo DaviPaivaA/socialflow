@@ -4,7 +4,8 @@ import type {
   AuthUser,
   AuthWorkspace,
 } from "../../shared/authContract";
-import type { NavKey, PageTitle } from "../types/social";
+import type { NavKey, PageTitle, Post } from "../types/social";
+import type { PostsLoadState } from "../pages/Posts";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 
@@ -25,6 +26,10 @@ type MainLayoutProps = {
   onToggleMenu: () => void;
   workspaceError: string | null;
   workspaces: AuthWorkspace[];
+  posts: readonly Post[];
+  postsLoadState: PostsLoadState;
+  onOpenPost: (id: string) => void;
+  modalActive: boolean;
 };
 
 export function MainLayout({
@@ -44,6 +49,10 @@ export function MainLayout({
   onToggleMenu,
   workspaceError,
   workspaces,
+  posts,
+  postsLoadState,
+  onOpenPost,
+  modalActive,
 }: MainLayoutProps) {
   return (
     <main className="app-shell">
@@ -63,7 +72,8 @@ export function MainLayout({
       />
 
       <section className="main-area">
-        <Topbar currentUser={currentUser} onToggleMenu={onToggleMenu} />
+        <Topbar currentUser={currentUser} role={currentTenant.role} onToggleMenu={onToggleMenu}
+          posts={posts} postsLoadState={postsLoadState} onOpenPost={onOpenPost} modalActive={modalActive} />
 
         <div className="page-content">
           <header className="page-header">

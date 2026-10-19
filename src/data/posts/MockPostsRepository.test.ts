@@ -5,6 +5,8 @@ import type { Post } from "../../types/social";
 import { createPostsRepository } from "./createPostsRepository";
 import { MockPostsRepository } from "./MockPostsRepository";
 import type { CreatePostInput } from "./PostsRepository";
+import type { TenantRole } from "../../../shared/authContract";
+import { isPostDetail } from "../../../shared/postManagementContract";
 
 const existingPost: Post = {
   authorUserId: "22222222-2222-4222-8222-222222222222",
@@ -30,6 +32,96 @@ const newPost: CreatePostInput = {
 };
 
 describe("MockPostsRepository", () => {
+  const clock = () => new Date("2026-08-11T12:00:00.000Z");
+  const actor = (role: TenantRole = "owner", userId = existingPost.authorUserId, tenantId = existingPost.tenantId) => ({ userId, tenantId, role });
+  const repositoryFor = (role: TenantRole = "owner", userId = existingPost.authorUserId) => new MockPostsRepository([existingPost], { actor: () => actor(role, userId), now: clock });
+
+  it("retains legacy zero targets, identity and omitted fields on update", async () => {
+    const repository = repositoryFor();
+    const result = await repository.updateScheduled(existingPost.id, { title: null });
+    expect(isPostDetail(result)).toBe(true);
+    expect(result.post).toEqual({ ...existingPost, title: null, updatedAt: clock().toISOString() });
+    expect(result.publications).toEqual([]);
+    result.post.mediaAssetIds.push("44444444-4444-4444-8444-444444444444");
+    expect((await repository.get(existingPost.id)).post.mediaAssetIds).toEqual([]);
+  });
+
+  it("persists created destinations, deep clones and restores removed targets using the original IDs", async () => {
+    const repository = repositoryFor();
+    const supplied = [...newPost.socialAccountIds];
+    const created = await repository.create({ ...newPost, socialAccountIds: supplied });
+    const originalId = created.publications[0]!.id;
+    created.publications[0]!.status = "failed"; created.publications.splice(0); supplied.push(existingPost.id);
+    const detail = await repository.get(created.post.id);
+    expect(detail.publications).toMatchObject([{ id: originalId, status: "scheduled" }]);
+    const newId = "66666666-6666-4666-8666-666666666666";
+    const removed = await repository.updateScheduled(created.post.id, { socialAccountIds: [newId] });
+    expect(removed.publications.find(p => p.id === originalId)?.status).toBe("cancelled");
+    const restored = await repository.updateScheduled(created.post.id, { socialAccountIds: newPost.socialAccountIds });
+    expect(restored.publications.find(p => p.id === originalId)).toMatchObject({ socialAccountId: newPost.socialAccountIds[0], status: "scheduled" });
+    restored.publications[0]!.status = "failed";
+    expect((await repository.get(created.post.id)).publications.find(p => p.id === originalId)?.status).toBe("scheduled");
+  });
+
+  it("preserves the sole uppercase destination identity across repeated caption-only updates", async () => {
+    const repository = repositoryFor();
+    const created = await repository.create({ ...newPost, socialAccountIds: ["AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"] });
+    for (const caption of ["First edit", "Second edit", "Third edit"]) {
+      const detail = await repository.updateScheduled(created.post.id, { caption });
+      expect(detail.post.caption).toBe(caption);
+      expect.soft(detail.publications).toEqual(created.publications);
+      expect.soft(detail.publications.map(p => ({ id: p.id, status: p.status }))).toEqual([
+        { id: created.publications[0]!.id, status: "scheduled" },
+      ]);
+    }
+    expect((await repository.get(created.post.id)).publications).toEqual(created.publications);
+  });
+
+  it.each(["owner", "admin", "member"] as const)("allows %s management of own post and cancellation stays historical", async role => {
+    const repository = repositoryFor(role);
+    expect((await repository.get(existingPost.id)).permissions).toEqual({ canEditSchedule: true, canCancelSchedule: true });
+    await repository.cancelScheduled(existingPost.id); await repository.cancelScheduled(existingPost.id);
+    expect(await repository.list()).toEqual([]);
+    expect(await repository.get(existingPost.id)).toMatchObject({ post: { status: "cancelled" }, permissions: { canEditSchedule: false, canCancelSchedule: false } });
+    await expect(repository.updateScheduled(existingPost.id, { caption: "No" })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("uses current actor policy before idempotent cancellation, without allowing foreign tenant access", async () => {
+    let current = actor();
+    const repository = new MockPostsRepository([existingPost], { actor: () => current, now: clock });
+    await repository.cancelScheduled(existingPost.id);
+    current = actor("member", "77777777-7777-4777-8777-777777777777");
+    await expect(repository.cancelScheduled(existingPost.id)).rejects.toMatchObject({ status: 403 });
+    await expect(repository.updateScheduled(existingPost.id, { title: "No" })).rejects.toMatchObject({ status: 403 });
+    current = actor("owner", current.userId, "88888888-8888-4888-8888-888888888888");
+    for (const id of [existingPost.id, "99999999-9999-4999-8999-999999999999"]) {
+      await expect(repository.get(id)).rejects.toMatchObject({ status: 404, body: { error: { code: "post_not_found" } } });
+    }
+    expect(await repository.list()).toEqual([]);
+  });
+
+  it.each(["owner", "admin", "member"] as const)("denies %s mutations of published posts", async role => {
+    const repository = new MockPostsRepository([{ ...existingPost, status: "published", publishedAt: existingPost.createdAt }], { actor: () => actor(role), now: clock });
+    await expect(repository.cancelScheduled(existingPost.id)).rejects.toMatchObject({ status: 409 });
+    await expect(repository.updateScheduled(existingPost.id, { title: "No" })).rejects.toMatchObject({ status: 409 });
+    expect((await repository.get(existingPost.id)).post.status).toBe("published");
+  });
+
+  it("checks member author, future date and preserves no-op timestamps", async () => {
+    const other = repositoryFor("member", "77777777-7777-4777-8777-777777777777");
+    expect((await other.get(existingPost.id)).permissions.canEditSchedule).toBe(false);
+    await expect(other.updateScheduled(existingPost.id, { caption: "No" })).rejects.toMatchObject({ status: 403 });
+    const repository = repositoryFor();
+    expect((await repository.updateScheduled(existingPost.id, { title: existingPost.title })).post).toEqual(existingPost);
+    await expect(repository.updateScheduled(existingPost.id, { scheduledFor: "2020-01-01T00:00:00.000Z" })).rejects.toMatchObject({ status: 400, body: { error: { code: "invalid_post", fields: ["scheduledFor"] } } });
+  });
+
+  it.each([{}, { socialAccountIds: [] }, { mediaAssetIds: ["bad"] }, { title: " " }, { caption: " " }, { tenantId: existingPost.tenantId }])("rejects invalid mock PATCH %j without mutation", async patch => {
+    const repository = repositoryFor();
+    await expect(repository.updateScheduled(existingPost.id, patch)).rejects.toMatchObject({ status: 400 });
+    expect((await repository.get(existingPost.id)).post).toEqual(existingPost);
+  });
+
   it("normaliza e clona mediaAssetIds sem compartilhar a referência", async () => {
     const mediaId = "44444444-4444-4444-8444-444444444444";
     const seed = { ...existingPost, mediaAssetIds: [mediaId] };
