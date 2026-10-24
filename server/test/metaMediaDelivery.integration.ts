@@ -22,6 +22,27 @@ const config = { publicOrigin: "https://media.example.com", signingKey: Buffer.a
 const signer = new MetaMediaSigner(config);
 const bytes = Buffer.alloc(300, 0x61);
 const scopes = ["pages_show_list", "pages_read_engagement", "instagram_basic", "instagram_content_publish"];
+// Local to this test: reused by delivery assertions and negative controls so
+// the optimized comparison cannot silently accept partial bytes or non-Buffers.
+function equalBufferContent(actual: unknown, expected: unknown): boolean {
+  return Buffer.isBuffer(actual) && Buffer.isBuffer(expected) &&
+    actual.length === expected.length && actual.equals(expected);
+}
+
+describe("integral binary comparison controls", () => {
+  it.each([0, 999_999, 1_999_999])("rejects equal-sized buffers differing only at byte %s", index => {
+    const expected = Buffer.alloc(2_000_000, 0x61); const actual = Buffer.from(expected);
+    actual[index] = 0x62;
+    expect(equalBufferContent(actual, expected)).toBe(false);
+  });
+  it.each([1_999_999, 2_000_001])("rejects a different complete length: %s", length => {
+    expect(equalBufferContent(Buffer.alloc(length, 0x61), Buffer.alloc(2_000_000, 0x61))).toBe(false);
+  });
+  it.each(["actual", "expected"])("rejects a byte-identical non-Buffer on the %s side", side => {
+    const content = Buffer.alloc(2_000_000, 0x61); const typedArray = new Uint8Array(content);
+    expect(equalBufferContent(side === "actual" ? typedArray : content, side === "expected" ? typedArray : content)).toBe(false);
+  });
+});
 // No skip: these security gates require the isolated PostgreSQL fixture.
 describe("Meta media delivery (HTTP, PostgreSQL and filesystem)", () => {
   let fixture: Awaited<ReturnType<typeof publicationFixture>>;
@@ -84,7 +105,7 @@ describe("Meta media delivery (HTTP, PostgreSQL and filesystem)", () => {
       const opened = await openContent();
       try {
         expect(opened).toMatchObject({ mimeType: "image/jpeg", sizeBytes: 2_000_000 });
-        const actual = await opened.handle.readFile(); expect(actual).toEqual(content);
+        const actual = await opened.handle.readFile(); expect(equalBufferContent(actual, content)).toBe(true);
       } finally { await opened.close(); }
       expect(opened.handle.fd).toBe(-1);
     }

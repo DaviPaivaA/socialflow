@@ -130,6 +130,9 @@ describe("Topbar controls", () => {
     const user = userEvent.setup();
     render(<Topbar {...props()} />);
     const trigger = screen.getByRole("button", { name: "Notificações" });
+    expect(trigger).toHaveTextContent("🔔");
+    expect(trigger).toHaveAttribute("type", "button");
+    expect(trigger).toHaveClass("notification");
     expect(trigger.querySelector("i")).toBeNull();
     await user.click(trigger);
     expect(screen.getByRole("region", { name: "Notificações" })).toHaveTextContent("Nenhuma notificação disponível");

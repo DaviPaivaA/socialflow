@@ -8,6 +8,19 @@ export const META_OAUTH_SCOPES = [
   "instagram_content_publish",
 ] as const;
 
+export const META_INSIGHTS_OAUTH_SCOPES = [
+  "read_insights",
+  "instagram_manage_insights",
+] as const;
+
+export function selectMetaOAuthScopes(
+  config?: Pick<MetaOAuthConfig, "insightsEnabled">,
+): readonly string[] {
+  return config?.insightsEnabled === true
+    ? [...META_OAUTH_SCOPES, ...META_INSIGHTS_OAUTH_SCOPES]
+    : META_OAUTH_SCOPES;
+}
+
 const AUTHORIZATION_ORIGIN = "https://www.facebook.com";
 const GRAPH_ORIGIN = "https://graph.facebook.com";
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -19,6 +32,7 @@ export type MetaOAuthConfig = {
   appId: string | null;
   appSecret: string | null;
   enabled: boolean;
+  insightsEnabled?: boolean;
   graphApiVersion: string;
   redirectUri: string | null;
   stateTtlSeconds: number;
@@ -213,7 +227,7 @@ export class HttpMetaOAuthClient implements MetaOAuthProviderClient {
     url.searchParams.set("client_id", this.config.appId);
     url.searchParams.set("redirect_uri", this.config.redirectUri);
     url.searchParams.set("response_type", "code");
-    url.searchParams.set("scope", META_OAUTH_SCOPES.join(","));
+    url.searchParams.set("scope", selectMetaOAuthScopes(this.config).join(","));
     url.searchParams.set("state", state);
     return url.toString();
   }

@@ -722,7 +722,7 @@ function RoutedApp({
         />
         <Route
           path={routePaths.agenda}
-          element={<Agenda loadState={postsLoadState} onCompose={openComposer} posts={posts} />}
+          element={<Agenda loadState={postsLoadState} onCompose={openComposer} posts={posts} workspaceId={workspaceId} repository={repository} socialAccountsRepository={socialAccountsRepository} onUnauthorized={invalidateSession} />}
         />
         <Route
           path={routePaths.posts}

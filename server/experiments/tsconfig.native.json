@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.https.json",
+  "include": ["./*.ts", "../test/metaInsightsBatch*.test.ts", "../test/metaInsightsNativeHttpsDriver.test.ts", "../test/metaInsightsPagePilot.test.ts"]
+}

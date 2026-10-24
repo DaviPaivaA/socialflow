@@ -77,7 +77,7 @@ export function Topbar({ currentUser, onToggleMenu, posts, postsLoadState, onOpe
           aria-controls={notificationId}
           onClick={() => setPanel((current) => current === "notifications" ? null : "notifications")}
         >
-          ♢
+          🔔
         </button>
         <div
           aria-label={`Usuário ${currentUser.displayName}`}

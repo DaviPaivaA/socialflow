@@ -32,6 +32,10 @@ import type {
 import { MetaOAuthClientError } from "../src/metaOAuthClient.ts";
 import { runMigrations } from "../src/migrations.ts";
 import { SocialTokenCipher } from "../src/socialTokenCrypto.ts";
+import { PostgresMetaOAuthStateRepository } from "../src/metaOAuthStateRepository.ts";
+import { PostgresSocialAccountsRepository } from "../src/postgresSocialAccountsRepository.ts";
+import { InvalidMetaAuthorizationContextError } from "../src/socialAccountsRepository.ts";
+import { requiredPublishingScopes } from "../../shared/publicationPolicy.ts";
 
 const CORS_ORIGIN = "http://localhost:5173";
 const META_CONFIG: MetaOAuthConfig = {
@@ -253,6 +257,49 @@ describe("OAuth Meta HTTP com PostgreSQL", () => {
     const body: unknown = await response.json();
     expect(isSocialAccountsResponse(body)).toBe(true);
     return (body as SocialAccountsResponse).socialAccounts;
+  }
+
+  async function authorizationContext(account: RegisteredAccount, state: string) {
+    const stateHash = createHash("sha256").update(state).digest("hex");
+    const result = await pool.query<{ auth_session_id: string; membership_id: string }>(
+      "SELECT auth_session_id, membership_id FROM oauth_authorization_requests WHERE state_hash = $1", [stateHash],
+    );
+    return {
+      authorUserId: account.session.user.id,
+      membershipId: result.rows[0]!.membership_id,
+      sessionId: result.rows[0]!.auth_session_id,
+      stateHash,
+      tenantId: account.session.tenant.id,
+    };
+  }
+
+  async function persistedAuthorizationSnapshot() {
+    return (await pool.query(`SELECT
+      (SELECT jsonb_agg(to_jsonb(row) ORDER BY id) FROM oauth_connections row) AS connections,
+      (SELECT jsonb_agg(to_jsonb(row) ORDER BY id) FROM social_accounts row) AS accounts,
+      (SELECT jsonb_agg(to_jsonb(row) ORDER BY social_account_id) FROM social_account_credentials row) AS credentials
+    `)).rows;
+  }
+
+  async function waitForBlockedTransaction(blockerPid: number) {
+    await vi.waitFor(async () => {
+      const result = await pool.query<{ blocked: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+          WHERE datname = current_database() AND $1::int = ANY(pg_blocking_pids(pid))) AS blocked`,
+        [blockerPid],
+      );
+      expect(result.rows[0]?.blocked).toBe(true);
+    }, { interval: 10, timeout: 1_500 });
+  }
+
+  async function waitForAuthorityExpiry(table: "auth_sessions" | "oauth_authorization_requests", id: string) {
+    // Database wall-clock, not a JS clock assumption: wake only after the persisted deadline.
+    await pool.query(`SELECT pg_sleep(GREATEST(0,
+      EXTRACT(EPOCH FROM (expires_at - clock_timestamp())))::double precision + 0.03)
+      FROM ${table} WHERE id = $1::uuid`, [id]);
+    expect((await pool.query<{ expired: boolean }>(
+      `SELECT expires_at <= clock_timestamp() AS expired FROM ${table} WHERE id = $1::uuid`, [id],
+    )).rows[0]?.expired).toBe(true);
   }
 
   async function addWorkspace(userId: string) {
@@ -529,6 +576,18 @@ describe("OAuth Meta HTTP com PostgreSQL", () => {
     );
   });
 
+  it.each([{ insightsEnabled: true }, { scopes: ["read_insights"] }])(
+    "não permite que o request controle o opt-in Insights %j", async (body) => {
+      const account = await register();
+      const response = await apiFetch(`${baseUrl}/auth/meta/start`, {
+        body: JSON.stringify(body), headers: { "Content-Type": "application/json", Cookie: account.cookie }, method: "POST",
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "invalid_meta_oauth_start" } });
+      expect((await pool.query("SELECT count(*)::int AS count FROM oauth_authorization_requests")).rows[0]?.count).toBe(0);
+    },
+  );
+
   it("descobre Pages e Instagram, cifra tokens e reconecta sem duplicação", async () => {
     const account = await register();
     metaClient.pages = [
@@ -706,6 +765,114 @@ describe("OAuth Meta HTTP com PostgreSQL", () => {
       SELECT count(*)::int AS count FROM social_accounts
     `);
     expect(count.rows[0]?.count).toBe(3);
+  });
+
+  // Catches accepting the transaction-start time after a context or later write lock wait.
+  it.each([
+    ["auth_sessions", "auth_sessions"],
+    ["oauth_authorization_requests", "auth_sessions"],
+    ["auth_sessions", "oauth_connections"],
+    ["oauth_authorization_requests", "oauth_connections"],
+    ["auth_sessions", "social_account_credentials"],
+    ["oauth_authorization_requests", "social_account_credentials"],
+  ] as const)("rejeita upsert quando %s expira durante row lock de %s sem mutar credenciais", async (expiryTable, lockTable) => {
+    const account = await register();
+    metaClient.pages = [{ accessToken: "original-page-token", id: "100000000000070",
+      instagramBusinessAccountId: null, name: "Original", profileImageUrl: null, tasks: ["CREATE_CONTENT"], username: null }];
+    expect((await callback(account.cookie, await startOAuth(account.cookie))).headers.get("location")).toContain("meta=connected");
+    const state = await startOAuth(account.cookie);
+    const context = await authorizationContext(account, state);
+    await pool.query("UPDATE oauth_authorization_requests SET consumed_at = clock_timestamp() WHERE state_hash = $1", [context.stateHash]);
+    const request = await pool.query<{ id: string }>("SELECT id FROM oauth_authorization_requests WHERE state_hash = $1", [context.stateHash]);
+    const expiryId = expiryTable === "auth_sessions" ? context.sessionId : request.rows[0]!.id;
+    await pool.query(`UPDATE ${expiryTable} SET expires_at = clock_timestamp() + interval '2 seconds' WHERE id = $1::uuid`, [expiryId]);
+    const before = await persistedAuthorizationSnapshot();
+    const blocker = await pool.connect();
+    let pending: Promise<unknown> | undefined;
+    try {
+      await blocker.query("BEGIN");
+      const pid = (await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+      await blocker.query(`SELECT ${lockTable === "social_account_credentials" ? "social_account_id" : "id"} FROM ${lockTable} FOR UPDATE`);
+      pending = new PostgresSocialAccountsRepository(pool).upsertMetaAuthorization(context, {
+        accounts: [{ accessTokenEncrypted: cipher.encryptSecret("replacement-page-token"), displayName: "Should not change",
+          metadata: { tasks: ["CREATE_CONTENT"] }, profileImageUrl: null, provider: "facebook",
+          providerAccountId: "100000000000070", tokenExpiresAt: null, username: null }],
+        externalUserId: "998877665544332211", grantedScopes: ["pages_show_list", "read_insights"],
+        unverifiedInstagramAccountIds: [], userAccessTokenEncrypted: cipher.encryptSecret("replacement-user-token"), userAccessTokenExpiresAt: null,
+      }).then((value) => value, (error: unknown) => error);
+      await waitForBlockedTransaction(pid);
+      await waitForAuthorityExpiry(expiryTable, expiryId);
+      await blocker.query("COMMIT");
+      expect(await pending).toBeInstanceOf(InvalidMetaAuthorizationContextError);
+      expect(await persistedAuthorizationSnapshot()).toEqual(before);
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await pending;
+    }
+  });
+
+  // Catches UPDATE checking expiry before waiting for the request row lock.
+  it.each(["auth_sessions", "oauth_authorization_requests"] as const)(
+    "não consome state quando %s expira durante row lock", async (expiryTable) => {
+      const account = await register();
+      const state = await startOAuth(account.cookie);
+      const context = await authorizationContext(account, state);
+      const request = await pool.query<{ id: string }>("SELECT id FROM oauth_authorization_requests WHERE state_hash = $1", [context.stateHash]);
+      const expiryId = expiryTable === "auth_sessions" ? context.sessionId : request.rows[0]!.id;
+      await pool.query(`UPDATE ${expiryTable} SET expires_at = clock_timestamp() + interval '2 seconds' WHERE id = $1::uuid`, [expiryId]);
+      const before = await persistedAuthorizationSnapshot();
+      const blocker = await pool.connect();
+      let pending: ReturnType<PostgresMetaOAuthStateRepository["consume"]> | undefined;
+      try {
+        await blocker.query("BEGIN");
+        const pid = (await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+        await blocker.query("SELECT id FROM oauth_authorization_requests WHERE state_hash = $1 FOR UPDATE", [context.stateHash]);
+        pending = new PostgresMetaOAuthStateRepository(pool).consume({
+          membershipId: context.membershipId, sessionId: context.sessionId,
+          tenant: account.session.tenant, user: account.session.user,
+        }, context.stateHash);
+        await waitForBlockedTransaction(pid);
+        await waitForAuthorityExpiry(expiryTable, expiryId);
+        await blocker.query("COMMIT");
+        expect(await pending).toEqual({ success: false, reason: expiryTable === "auth_sessions" ? "session_invalid" : "expired" });
+        expect((await pool.query("SELECT consumed_at FROM oauth_authorization_requests WHERE state_hash = $1", [context.stateHash])).rows[0]?.consumed_at).toBeNull();
+        expect(await persistedAuthorizationSnapshot()).toEqual(before);
+      } finally {
+        await blocker.query("ROLLBACK");
+        blocker.release();
+        await pending;
+      }
+    },
+  );
+
+  it("reconexão substitui grants Insights sem revogar publicação ou tokens", async () => {
+    const account = await register();
+    metaClient.pages = [{ accessToken: "insights-page-token", id: "100000000000071",
+      instagramBusinessAccountId: "200000000000071", name: "Page Insights", profileImageUrl: null, tasks: ["CREATE_CONTENT"], username: null }];
+    metaClient.instagramAccounts.set("200000000000071", { displayName: "IG Insights", id: "200000000000071", profileImageUrl: null, username: "insights" });
+    metaClient.permissions.push({ name: "instagram_content_publish", status: "granted" },
+      { name: "read_insights", status: "granted" }, { name: "instagram_manage_insights", status: "declined" });
+    expect((await callback(account.cookie, await startOAuth(account.cookie))).headers.get("location")).toContain("meta=connected");
+    const initial = await listAccounts(account.cookie);
+    expect(initial).toHaveLength(2);
+    expect(initial.every((item) => item.scopes.includes("read_insights") && !item.scopes.includes("instagram_manage_insights"))).toBe(true);
+    metaClient.permissions = metaClient.permissions.map((permission) => permission.name === "read_insights" ? { ...permission, status: "expired" } : permission);
+    metaClient.userToken = "reconnected-without-insights";
+    metaClient.pages[0]!.accessToken = "reconnected-page-without-insights";
+    expect((await callback(account.cookie, await startOAuth(account.cookie))).headers.get("location")).toContain("meta=connected");
+    const reconnected = await listAccounts(account.cookie);
+    expect(reconnected.map((item) => item.id).sort()).toEqual(initial.map((item) => item.id).sort());
+    for (const item of reconnected) {
+      expect(item.status).toBe("connected");
+      expect(item.scopes).toEqual(["pages_show_list", "pages_read_engagement", "instagram_basic", "pages_manage_posts", "instagram_content_publish"]);
+      const credential = await new PostgresSocialAccountsRepository(pool).findMetaPublishingCredential({ authorUserId: account.session.user.id, tenantId: account.session.tenant.id }, item.id);
+      expect(credential).not.toBeNull();
+      expect(requiredPublishingScopes(credential!.provider).every((scope) => credential!.scopes.includes(scope))).toBe(true);
+      expect(cipher.decryptSecret(credential!.accessTokenEncrypted!)).toBe("reconnected-page-without-insights");
+    }
+    const connection = await pool.query<{ access_token_encrypted: Buffer }>("SELECT access_token_encrypted FROM oauth_connections");
+    expect(cipher.decryptSecret(connection.rows[0]!.access_token_encrypted.toString("utf8"))).toBe("reconnected-without-insights");
   });
 
   it("serializa callbacks simultâneos da mesma conta sem duplicar ou corromper credenciais", async () => {

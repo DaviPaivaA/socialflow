@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { SocialAccount } from "../../shared/socialAccountContract.ts";
 import type { AuthContext } from "./authService.ts";
 import {
-  META_OAUTH_SCOPES,
+  selectMetaOAuthScopes,
   MetaOAuthClientError,
   type MetaOAuthConfig,
   type MetaOAuthProviderClient,
@@ -273,6 +273,8 @@ export class MetaOAuthService {
   }
 }
 
-export function metaOAuthRequestedScopes(): readonly string[] {
-  return META_OAUTH_SCOPES;
+export function metaOAuthRequestedScopes(
+  config?: Pick<MetaOAuthConfig, "insightsEnabled">,
+): readonly string[] {
+  return selectMetaOAuthScopes(config);
 }

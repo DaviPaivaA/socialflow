@@ -62,10 +62,10 @@ describe("coordinator restart and concurrent recovery (isolated PostgreSQL)", ()
     async function stage(value: PublicationOperationStage) {
       await prepared();
       await fixture.pool.query(`UPDATE publication_operations SET stage=$3,external_id=CASE WHEN $3='creating' THEN NULL ELSE '200' END,
-        lease_token=NULL,lease_expires_at=NULL,next_action_at=clock_timestamp() WHERE tenant_id=$1 AND publication_id=$2`, [target.tenantId, target.id, value]);
+        lease_token=NULL,lease_expires_at=NULL,next_action_at=$4 WHERE tenant_id=$1 AND publication_id=$2`, [target.tenantId, target.id, value, new Date()]);
     }
     async function row() { return (await fixture.pool.query("SELECT * FROM publication_operations WHERE tenant_id=$1 AND publication_id=$2", [target.tenantId, target.id])).rows[0]; }
-    async function due() { await fixture.pool.query("UPDATE publication_operations SET lease_token=NULL,lease_expires_at=NULL,next_action_at=clock_timestamp() WHERE tenant_id=$1 AND publication_id=$2", [target.tenantId, target.id]); }
+    async function due() { await fixture.pool.query("UPDATE publication_operations SET lease_token=NULL,lease_expires_at=NULL,next_action_at=$3 WHERE tenant_id=$1 AND publication_id=$2", [target.tenantId, target.id, new Date()]); }
     async function run(runner = coordinator()) { await runner.publishDueBatch(new Date()); await runner.whenIdle(); }
     return { post, target, repository, operations, media, client, coordinator, prepared, stage, row, due, run,
       destination: async () => (await repository.listForPost(post.tenantId, post.postId))[0] };

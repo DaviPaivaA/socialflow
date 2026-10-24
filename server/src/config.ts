@@ -173,6 +173,11 @@ function loadMetaOAuthConfig(
     appId,
     appSecret,
     enabled,
+    insightsEnabled: parseBoolean(
+      "META_INSIGHTS_OAUTH_ENABLED",
+      environment.META_INSIGHTS_OAUTH_ENABLED,
+      false,
+    ),
     graphApiVersion: parseMetaGraphApiVersion(
       environment.META_GRAPH_API_VERSION,
     ),

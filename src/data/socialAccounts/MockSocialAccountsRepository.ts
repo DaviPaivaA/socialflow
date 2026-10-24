@@ -35,20 +35,6 @@ export const initialSocialAccounts: SocialAccount[] = [
     updatedAt: "2026-01-11T12:00:00.000Z",
     username: "cafeaurora",
   },
-  {
-    createdAt: "2026-01-12T12:00:00.000Z",
-    disconnectedAt: null,
-    displayName: "Café Aurora",
-    id: "70000000-0000-4000-8000-000000000003",
-    profileImageUrl: null,
-    provider: "tiktok",
-    providerAccountId: "tiktok-cafe-aurora",
-    scopes: [],
-    status: "connected",
-    tokenExpiresAt: "2027-01-12T12:00:00.000Z",
-    updatedAt: "2026-01-12T12:00:00.000Z",
-    username: "cafeaurora",
-  },
 ];
 
 function cloneAccount(account: SocialAccount): SocialAccount {

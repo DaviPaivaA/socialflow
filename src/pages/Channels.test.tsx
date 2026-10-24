@@ -140,10 +140,10 @@ describe("Channels", () => {
     expect(screen.getByText("TikTok B")).toBeInTheDocument();
     expect(screen.getByText("Conectada")).toBeInTheDocument();
     expect(screen.getByText("Expirada")).toBeInTheDocument();
-    expect(screen.getByText("Pendente", { selector: ".connected-dot" })).toBeInTheDocument();
+    expect(within(screen.getByText("TikTok B").closest("article")!).getByText("Não conectado", { selector: ".connected-dot" })).toBeInTheDocument();
     expect(screen.getByLabelText("Instagram")).toBeInTheDocument();
     expect(screen.getByLabelText("Facebook")).toBeInTheDocument();
-    expect(screen.getByLabelText("TikTok")).toBeInTheDocument();
+    expect(within(screen.getByText("TikTok B").closest("article")!).getByLabelText("TikTok")).toBeInTheDocument();
   });
 
   it("mostra erro da API e invalida uma sessão expirada", async () => {
@@ -272,7 +272,7 @@ describe("Channels", () => {
     expect(within(facebookCard).getByText(/Token vencido em/)).toBeInTheDocument();
     expect(within(instagramCard).getByText("Sem credencial ativa")).toBeInTheDocument();
     expect(within(errorCard).getByText("Reconexão necessária")).toBeInTheDocument();
-    expect(within(tiktokCard).getByRole("button", { name: "Pendente" })).toBeDisabled();
+    expect(within(tiktokCard).getByRole("button", { name: "Somente leitura" })).toBeDisabled();
 
     await user.dblClick(within(facebookCard).getByRole("button", { name: "Reconectar com Meta" }));
     expect(startMetaOAuth).toHaveBeenCalledTimes(1);
@@ -612,10 +612,46 @@ describe("Channels", () => {
     );
 
     const tiktokButton = await screen.findByRole("button", {
-      name: "TikTok — Em breve",
+      name: "Conectar TikTok",
     });
-    expect(tiktokButton).toBeDisabled();
+    expect(tiktokButton).toBeEnabled();
     await user.click(tiktokButton);
     expect(startMetaOAuth).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent(/integração TikTok não está habilitada/i);
   });
+
+  it("identifica visualmente a integração futura sem criar uma conta TikTok", async () => {
+    render(<Channels repository={repository()} workspaceId={workspaceA} />, { wrapper: Wrapper });
+    const button = await screen.findByRole("button", { name: "Conectar TikTok" });
+    expect(button).toBeEnabled();
+    expect(button).toHaveAccessibleDescription(/Integração em desenvolvimento/);
+    expect(button.querySelector("svg")).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "TikTok" })).toBeInTheDocument();
+    expect(within(button.closest("article")!).getByText("Não conectado")).toBeInTheDocument();
+    expect(button.closest("article")!.querySelector("img")).toBeNull();
+    expect(screen.getByText(/Avatar e nome de usuário indisponíveis/)).toBeInTheDocument();
+    expect(screen.getByText("Nenhuma conta conectada")).toBeInTheDocument();
+  });
+
+  it.each(["connected", "expired", "pending"] as const)(
+    "mantém um registro TikTok %s indisponível sem desconectar ou reconectar",
+    async (status) => {
+      const user = userEvent.setup();
+      const socialRepository = repository({
+        list: vi.fn().mockResolvedValue([{ ...tiktok, status }]),
+        startMetaOAuth: vi.fn(),
+      });
+      render(<Channels repository={socialRepository} workspaceId={workspaceA} />, { wrapper: Wrapper });
+      const card = (await screen.findByText("TikTok B")).closest("article")!;
+      expect(within(card).getByText("Não conectado", { selector: ".connected-dot" })).toBeInTheDocument();
+      expect(within(card).queryByText("Conectada")).not.toBeInTheDocument();
+      expect(within(card).queryByText(/Token até|Token vencido/)).not.toBeInTheDocument();
+      const action = within(card).getByRole("button", { name: "Somente leitura" });
+      expect(action).toBeDisabled();
+      await user.click(action);
+      expect(socialRepository.startMetaOAuth).not.toHaveBeenCalled();
+      expect(socialRepository.disconnect).not.toHaveBeenCalled();
+      expect(socialRepository.update).not.toHaveBeenCalled();
+    },
+  );
 });

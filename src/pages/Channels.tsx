@@ -10,9 +10,11 @@ import {
 } from "../../shared/metaOAuthContract";
 import { useAuth } from "../auth/useAuth";
 import { ChannelBadge } from "../components/ChannelBadge";
+import { TikTokComingSoon } from "../components/TikTokComingSoon";
 import { HttpError } from "../data/api/apiClient";
 import type { SocialAccountsRepository } from "../data/socialAccounts/SocialAccountsRepository";
 import type { ChannelCode } from "../types/social";
+import "../features/tiktok/tiktok.css";
 
 type ChannelsProps = {
   navigateToAuthorization?: (url: string) => void;
@@ -385,6 +387,7 @@ export function Channels({
       <section className="channels-grid">
         {accounts.map((account) => {
           const provider = providerDetails[account.provider];
+          const isComingSoon = account.provider === "tiktok";
           const isDisconnecting = disconnectingIds.has(account.id);
           const canReconnectWithMeta =
             account.provider === "facebook" || account.provider === "instagram";
@@ -405,9 +408,9 @@ export function Channels({
                   <ChannelBadge code={provider.code} />
                 )}
                 <span
-                  className={`connected-dot channel-status--${account.status}`}
+                  className={`connected-dot channel-status--${isComingSoon ? "pending" : account.status}`}
                 >
-                  <i /> {statusLabels[account.status]}
+                  <i /> {isComingSoon ? "Não conectado" : statusLabels[account.status]}
                 </span>
               </div>
               <h2>{account.displayName}</h2>
@@ -417,17 +420,18 @@ export function Channels({
                 <span>provedor</span>
               </div>
               <div className="channel-health">
-                <span>Credencial</span>
-                <b>{expirationLabel(account)}</b>
+                <span>{isComingSoon ? "Integração" : "Credencial"}</span>
+                <b>{isComingSoon ? "Registro legado · somente leitura" : expirationLabel(account)}</b>
               </div>
               <button
                 className="secondary-button full"
                 disabled={
-                  isDisconnecting ||
+                  isComingSoon || isDisconnecting ||
                   account.status === "pending" ||
                   (needsReconnect && (!canReconnectWithMeta || isStartingMeta || !repository.startMetaOAuth))
                 }
                 onClick={(event) => {
+                  if (isComingSoon) return;
                   if (needsReconnect && canReconnectWithMeta) {
                     if (event.detail > 1) return;
                     void startMetaOAuth(account.id);
@@ -437,7 +441,9 @@ export function Channels({
                 }}
                 type="button"
               >
-                {isDisconnecting
+                {isComingSoon
+                  ? "Somente leitura"
+                  : isDisconnecting
                   ? "Desconectando..."
                   : isStartingMeta && reconnectingId === account.id
                     ? "Abrindo Meta..."
@@ -452,6 +458,12 @@ export function Channels({
             </article>
           );
         })}
+        <article className="panel channel-card tiktok-channel">
+          <div className="channel-card-top"><ChannelBadge code="TT" /><span className="connected-dot channel-status--pending"><i />Não conectado</span></div>
+          <h2>TikTok</h2>
+          <p>Nenhum perfil TikTok conectado. Avatar e nome de usuário indisponíveis.</p>
+          <TikTokComingSoon key={workspaceId} />
+        </article>
         <div className="add-channel-card">
           <span>＋</span>
           <strong>
@@ -469,9 +481,6 @@ export function Channels({
               {isStartingMeta
                 ? "Abrindo Meta..."
                 : "Conectar Facebook / Instagram"}
-            </button>
-            <button className="secondary-button" disabled type="button">
-              TikTok — Em breve
             </button>
           </div>
           {!repository.startMetaOAuth && (

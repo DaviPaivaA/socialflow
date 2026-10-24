@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.server.json",
+  "compilerOptions": { "noEmit": true },
+  "include": [
+    "server/experiments/**/*.ts",
+    "server/test/metaInsightsExternalAuthorization.test.ts",
+    "server/test/metaInsightsPilotTestFixtures.ts",
+    "server/test/metaInsightsProtectedInputFixtures.ts"
+  ]
+}

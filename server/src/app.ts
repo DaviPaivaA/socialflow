@@ -75,6 +75,12 @@ import { HttpMetaPublishingClient, MetaPublishingClientError, type MetaPublishin
 import { PostgresPostPublicationsRepository } from "./postPublicationsRepository.ts";
 import { PublicationCoordinator } from "./publicationCoordinator.ts";
 import { PublicationScheduler, type PublicationSchedulerOptions } from "./publicationScheduler.ts";
+import { handleInsightsRequest } from "./insightsHttp.ts";
+import { PostgresInsightsRepository } from "./insightsRepository.ts";
+import { InsightsService } from "./insightsService.ts";
+import { FacebookInsightsClient } from "./facebookInsightsClient.ts";
+import { InstagramInsightsClient } from "./instagramInsightsClient.ts";
+import type { InsightsTransport } from "./metaInsightsClient.ts";
 
 const MAX_BODY_SIZE = 1_048_576;
 
@@ -90,6 +96,7 @@ type ApiServerOptions = {
   metaMedia?: MetaMediaConfig;
   metaOAuthClient?: MetaOAuthProviderClient;
   metaPublishingClient?: MetaPublishingProviderClient;
+  insightsTransportForTests?: InsightsTransport;
   publicationSchedulerOptions?: Omit<PublicationSchedulerOptions, "coordinator" | "logger">;
   mediaLimits?: MediaLimits;
   mediaStoragePath?: string;
@@ -280,6 +287,7 @@ export function createApiServer({
   metaMedia = null,
   metaOAuthClient,
   metaPublishingClient,
+  insightsTransportForTests,
   publicationSchedulerOptions,
   mediaLimits = { imageBytes: 25 * 1024 * 1024, videoBytes: 250 * 1024 * 1024 },
   mediaStoragePath = "data/media",
@@ -289,7 +297,15 @@ export function createApiServer({
   socialTokenCipher,
   trustProxy = false,
 }: ApiServerOptions) {
+  if (insightsTransportForTests !== undefined && process.env.NODE_ENV !== "test") {
+    throw new Error("Insights test transport is only allowed in NODE_ENV=test.");
+  }
   const authService = new PostgresAuthService(pool, sessionTtlSeconds);
+  const insightsService = new InsightsService({
+    repository: new PostgresInsightsRepository(pool), cipher: socialTokenCipher,
+    facebookClient: new FacebookInsightsClient({ transport: insightsTransportForTests }),
+    instagramClient: new InstagramInsightsClient({ transport: insightsTransportForTests }),
+  });
   const authRateLimiter = new InMemoryRateLimiter(authRateLimit);
   const postsContextResolver = new AuthenticatedPostsContextResolver(authService);
   const postsStore = new PostgresPostsStore(pool, {
@@ -400,6 +416,10 @@ export function createApiServer({
         return;
       }
       writeCorsHeaders(request, response, corsOrigin);
+      if (url.pathname === "/insights" || url.pathname.startsWith("/insights/")) {
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+      }
       const isMetaCallback =
         url.pathname === "/auth/meta/callback" && method === "GET";
       if (url.pathname.startsWith("/auth/")) {
@@ -441,6 +461,8 @@ export function createApiServer({
           );
         }
       }
+
+      if (await handleInsightsRequest(request, response, url, { authService, insightsService, sendJson })) return;
 
       if (url.pathname === "/health" && method === "GET") {
         try {
@@ -963,7 +985,8 @@ export function createApiServer({
       }
 
       // Capability requests must never put query, storage paths or raw errors in logs.
-      logger.error("Erro interno ao processar a requisição.", request.url?.startsWith("/meta-media/") ? { name: "MediaDeliveryError" } : error);
+      logger.error("Erro interno ao processar a requisição.", request.url?.startsWith("/meta-media/") ? { name: "MediaDeliveryError" }
+        : request.url?.split("?")[0] === "/insights" || request.url?.startsWith("/insights/") ? { name: "InsightsError" } : error);
       sendJson(response, 500, {
         error: {
           code: "internal_error",

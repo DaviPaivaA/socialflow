@@ -518,8 +518,23 @@ describe("API com PostgreSQL e schema oficial", () => {
         .rejects.toMatchObject({ code: "23505" });
       await expect(pool.query(relationSql, [tenantA, postA, mediaA2, 0]))
         .rejects.toMatchObject({ code: "23505" });
+      const restriction = (await pool.query<{
+        version: number; confdeltype: string; condeferrable: boolean;
+      }>(`SELECT current_setting('server_version_num')::int AS version,
+          confdeltype, condeferrable FROM pg_constraint
+        WHERE conrelid = 'post_media'::regclass
+          AND conname = 'post_media_media_asset_fkey'`)).rows[0]!;
+      expect(restriction).toMatchObject({ confdeltype: "r", condeferrable: false });
+      const major = Math.floor(restriction.version / 10_000);
+      expect([17, 18]).toContain(major);
+      // PG17 reports foreign_key_violation; PG18 distinguishes RESTRICT.
       await expect(pool.query(`DELETE FROM media_assets WHERE tenant_id = $1::uuid AND id = $2::uuid`, [tenantA, mediaA]))
-        .rejects.toMatchObject({ code: "23001" });
+        .rejects.toMatchObject({ code: major === 17 ? "23503" : "23001",
+          schema, table: "post_media", constraint: "post_media_media_asset_fkey" });
+      expect((await pool.query(`SELECT id FROM media_assets WHERE tenant_id = $1::uuid AND id = $2::uuid`, [tenantA, mediaA])).rows)
+        .toEqual([{ id: mediaA }]);
+      expect((await pool.query(`SELECT media_asset_id FROM post_media WHERE tenant_id = $1::uuid AND post_id = $2::uuid`, [tenantA, postA])).rows)
+        .toEqual([{ media_asset_id: mediaA }]);
       await pool.query(`DELETE FROM posts WHERE tenant_id = $1::uuid AND id = $2::uuid`, [tenantA, postA]);
       const remaining = await pool.query<{ count: string }>(`
         SELECT count(*)::text AS count FROM post_media
@@ -1283,7 +1298,8 @@ describe("POST /posts Meta misto", () => {
     });
     async function tick() {
       // Translate only local scheduling in the isolated schema; DB remains authoritative for leases.
-      await pool.query("UPDATE publication_operations SET next_action_at=clock_timestamp() WHERE tenant_id=$1 AND lease_token IS NULL AND stage NOT IN ('succeeded','failed','unknown')", [tenantId]);
+      // Use the consumer's millisecond clock: a DB microsecond can still be future for Date.
+      await pool.query("UPDATE publication_operations SET next_action_at=$2 WHERE tenant_id=$1 AND lease_token IS NULL AND stage NOT IN ('succeeded','failed','unknown')", [tenantId, new Date()]);
       await api.server.publicationScheduler.tick();
       await api.server.publicationScheduler.whenIdle();
     }

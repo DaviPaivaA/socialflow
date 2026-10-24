@@ -3,7 +3,7 @@ import { copyFile, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { runMigrations } from "../src/migrations.ts";
 import { now, publicationFixture } from "./publicationFixtures.ts";
 import { PostgresPostPublicationsRepository } from "../src/postPublicationsRepository.ts";
@@ -59,7 +59,24 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication_operations schema (
     await insert(first);
     await expect(insert(first)).rejects.toMatchObject({ code: "23505" });
     await fixture.pool.query("DELETE FROM post_media WHERE media_asset_id=$1", [first.mediaId]);
-    await expect(fixture.pool.query("DELETE FROM media_assets WHERE id=$1", [first.mediaId])).rejects.toMatchObject({ code: "23001" });
+    const restriction = (await fixture.pool.query<{
+      version: number; schema: string; confdeltype: string; condeferrable: boolean;
+    }>(`SELECT current_setting('server_version_num')::int AS version,
+        current_schema() AS schema, confdeltype, condeferrable FROM pg_constraint
+      WHERE conrelid = 'publication_operations'::regclass
+        AND conname = 'publication_operations_tenant_id_media_asset_id_fkey'`)).rows[0]!;
+    expect(restriction).toMatchObject({ confdeltype: "r", condeferrable: false });
+    const major = Math.floor(restriction.version / 10_000);
+    expect([17, 18]).toContain(major);
+    // Preserve the exact SQLSTATE for each validated PostgreSQL major.
+    await expect(fixture.pool.query("DELETE FROM media_assets WHERE id=$1", [first.mediaId]))
+      .rejects.toMatchObject({ code: major === 17 ? "23503" : "23001",
+        schema: restriction.schema, table: "publication_operations",
+        constraint: "publication_operations_tenant_id_media_asset_id_fkey" });
+    expect((await fixture.pool.query("SELECT id FROM media_assets WHERE id=$1", [first.mediaId])).rows)
+      .toEqual([{ id: first.mediaId }]);
+    expect((await fixture.pool.query("SELECT media_asset_id FROM publication_operations WHERE publication_id=$1", [first.id])).rows)
+      .toEqual([{ media_asset_id: first.mediaId }]);
     await fixture.pool.query("DELETE FROM post_publications WHERE id=$1", [first.id]);
     expect((await fixture.pool.query("SELECT * FROM publication_operations WHERE publication_id=$1", [first.id])).rows).toEqual([]);
   });
@@ -160,7 +177,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication operation claims/ch
   }
   async function row(id: string) { return (await fixture.pool.query("SELECT * FROM publication_operations WHERE publication_id=$1", [id])).rows[0]; }
   async function setStage(id: string, stage: string, externalId: string | null = "789") {
-    await fixture.pool.query("UPDATE publication_operations SET stage=$2,external_id=$3,lease_token=NULL,lease_expires_at=NULL,next_action_at=clock_timestamp() WHERE publication_id=$1", [id, stage, externalId]);
+    // The consumer's logical Date has millisecond precision, unlike DB clock_timestamp().
+    await fixture.pool.query("UPDATE publication_operations SET stage=$2,external_id=$3,lease_token=NULL,lease_expires_at=NULL,next_action_at=$4 WHERE publication_id=$1", [id, stage, externalId, new Date()]);
   }
 
   it("claims concurrent destinations exactly once and snapshots only asynchronous flows", async () => {
@@ -417,5 +435,63 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("publication operation claims/ch
     expect(await operations.complete({ lease, result: { status: "failed", code: "test", message: "Erro seguro.", unknown: false }, now: new Date() })).toBe(false);
     expect((await row(input.id)).stage).toBe("prepared");
     expect((await destinations.listForPost(input.tenantId, input.postId))[0].status).toBe("cancelled");
+  });
+
+  it("11B preserves sub-millisecond due fences, exact equality and future scheduling", async () => {
+    const { input } = await claimed();
+    const instant = new Date();
+    const configure = async (microseconds: number) => {
+      await fixture.pool.query(`UPDATE publication_operations SET stage='processing',external_id='789',lease_token=NULL,
+        lease_expires_at=NULL,next_action_at=$2::timestamptz+$3*interval '1 microsecond' WHERE publication_id=$1`,
+      [input.id, instant, microseconds]);
+    };
+    const claim = (at: Date) => operations.claimAction({ tenantId: input.tenantId, publicationId: input.id, now: at });
+    await configure(500);
+    const evidence = (await fixture.pool.query(`SELECT operation.stage,destination.status,
+      operation.lease_token IS NULL AS unleased,
+      to_char(operation.next_action_at,'YYYY-MM-DD HH24:MI:SS.USOF') AS due_at,
+      extract(epoch FROM (operation.next_action_at-$2::timestamptz))*1000000 AS ahead_microseconds
+      FROM publication_operations operation JOIN post_publications destination
+      ON destination.tenant_id=operation.tenant_id AND destination.id=operation.publication_id
+      WHERE operation.publication_id=$1`, [input.id, instant])).rows[0];
+    expect(evidence).toMatchObject({ stage: "processing", status: "publishing", unleased: true });
+    expect(Number(evidence.ahead_microseconds)).toBe(500);
+    expect(await claim(instant)).toBeNull();
+    expect(await claim(new Date(instant.getTime() + 1))).not.toBeNull();
+    await configure(0);
+    expect(await claim(instant)).not.toBeNull();
+    await configure(60_000_000);
+    expect(await claim(instant)).toBeNull();
+
+    // Observe the original SQL-clock fixture without an intervening query before
+    // the Date capture. This is diagnostic frequency, not a test timing threshold.
+    const samples: { deltaMicroseconds: number; stage: string; status: string; unleased: boolean }[] = [];
+    for (let attempt = 0; attempt < 50; attempt++) {
+      await fixture.pool.query(`UPDATE publication_operations SET stage='processing',external_id='789',lease_token=NULL,
+        lease_expires_at=NULL,next_action_at=clock_timestamp() WHERE publication_id=$1`, [input.id]);
+      const now = new Date();
+      if (await claim(now)) continue;
+      const sample = (await fixture.pool.query(`SELECT extract(epoch FROM (operation.next_action_at-$2::timestamptz))*1000000 AS delta,
+        operation.stage,destination.status,operation.lease_token IS NULL AS unleased
+        FROM publication_operations operation JOIN post_publications destination
+        ON destination.tenant_id=operation.tenant_id AND destination.id=operation.publication_id
+        WHERE operation.publication_id=$1`, [input.id, now])).rows[0];
+      samples.push({ deltaMicroseconds: Number(sample.delta), stage: sample.stage, status: sample.status, unleased: sample.unleased });
+    }
+    console.info("11B_CLOCK_EVIDENCE", JSON.stringify({ deterministic: { ...evidence, supplied_at: instant.toISOString() },
+      originalFixtureAttempts: 50, originalFixtureNullClaims: samples.length, examples: samples.slice(0, 3) }));
+  });
+
+  it("11B stage fixture is due on the caller's logical Date clock", async () => {
+    const { input } = await claimed();
+    const instant = new Date(Date.now() - 1000);
+    // Only Date is controlled: PostgreSQL wall-clock lease expiry and I/O remain real.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(instant);
+    try {
+      await setStage(input.id, "processing");
+      const lease = await operations.claimAction({ tenantId: input.tenantId, publicationId: input.id, now: new Date() });
+      expect(lease).not.toBeNull();
+    } finally { vi.useRealTimers(); }
   });
 });

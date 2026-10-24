@@ -55,7 +55,7 @@ describe("Meta provider services isolated PostgreSQL/storage", () => {
     }
     async function row() { return (await testFixture.pool.query("SELECT * FROM publication_operations WHERE tenant_id=$1 AND publication_id=$2", [target.tenantId, target.id])).rows[0]; }
     async function due() {
-      await testFixture.pool.query("UPDATE publication_operations SET lease_token=NULL,lease_expires_at=NULL,next_action_at=clock_timestamp() WHERE tenant_id=$1 AND publication_id=$2", [target.tenantId, target.id]); instant = new Date();
+      await testFixture.pool.query("UPDATE publication_operations SET lease_token=NULL,lease_expires_at=NULL,next_action_at=$3 WHERE tenant_id=$1 AND publication_id=$2", [target.tenantId, target.id, new Date()]); instant = new Date();
     }
     async function advance() { instant = new Date(); await dispatcher.advance({ target, operation: await lease() }); }
     return { post, target, assetId, repository, operations, accounts, media, client, deps, instagram, facebook, dispatcher, lease, row, due, advance,
@@ -95,8 +95,8 @@ describe("Meta provider services isolated PostgreSQL/storage", () => {
     ["facebook_reel", "uploading"], ["facebook_reel", "processing"], ["facebook_reel", "publishing"], ["facebook_reel", "verifying"],
   ] as const)("keeps %s/%s GET cadence after crash without result checkpoint and restart at 31 seconds", async (kind, stage) => {
     const s = await setup(kind);
-    await fixture.pool.query(`UPDATE publication_operations SET stage=$3,external_id='200',next_action_at=clock_timestamp()
-      WHERE tenant_id=$1 AND publication_id=$2`, [s.target.tenantId, s.target.id, stage]);
+    await fixture.pool.query(`UPDATE publication_operations SET stage=$3,external_id='200',next_action_at=$4
+      WHERE tenant_id=$1 AND publication_id=$2`, [s.target.tenantId, s.target.id, stage, new Date()]);
     s.client.getInstagramContainerStatus.mockResolvedValue({ status: "IN_PROGRESS" });
     s.client.getFacebookReelStatus.mockResolvedValue({ uploadingPhase: "in_progress", processingPhase: "not_started", publishingPhase: "not_started", published: false, uploadedBytes: 0, videoStatus: "processing" });
     const status = kind === "facebook_reel" ? s.client.getFacebookReelStatus : s.client.getInstagramContainerStatus;
@@ -149,7 +149,7 @@ describe("Meta provider services isolated PostgreSQL/storage", () => {
     const isolated = await publicationFixture();
     try {
       const s = await setup(kind, 8, 262144000, isolated);
-      await isolated.pool.query("UPDATE publication_operations SET stage='processing',external_id='200',next_action_at=clock_timestamp() WHERE tenant_id=$1 AND publication_id=$2", [s.target.tenantId, s.target.id]);
+      await isolated.pool.query("UPDATE publication_operations SET stage='processing',external_id='200',next_action_at=$3 WHERE tenant_id=$1 AND publication_id=$2", [s.target.tenantId, s.target.id, new Date()]);
       await s.advance();
       const ready = await s.row(); expect(ready).toMatchObject({ stage: "ready", poll_count: 1, lease_token: null });
       const deadline = ready.deadline_at.getTime();

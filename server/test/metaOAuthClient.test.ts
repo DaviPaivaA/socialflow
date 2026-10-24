@@ -4,6 +4,7 @@ import {
   MetaOAuthClientError,
   type EnabledMetaOAuthConfig,
 } from "../src/metaOAuthClient.ts";
+import { metaOAuthRequestedScopes } from "../src/metaOAuthService.ts";
 
 const config: EnabledMetaOAuthConfig = {
   appId: "123456789012345",
@@ -25,6 +26,23 @@ function clientWith(fetchImpl: typeof fetch, timeoutMs = 1_000) {
 }
 
 describe("HttpMetaOAuthClient", () => {
+  // Catches silently ignoring opt-in, or accidentally granting it by default.
+  it.each([undefined, false, true])("seleciona scopes Insights apenas com opt-in explícito %s", (insightsEnabled) => {
+    const selectedConfig = { ...config, insightsEnabled };
+    const client = new HttpMetaOAuthClient(selectedConfig, { fetchImpl: vi.fn<typeof fetch>() });
+    const expected = [
+      "pages_show_list", "pages_read_engagement", "instagram_basic",
+      "pages_manage_posts", "instagram_content_publish",
+      ...(insightsEnabled === true ? ["read_insights", "instagram_manage_insights"] : []),
+    ];
+    expect(new URL(client.buildAuthorizationUrl(state)).searchParams.get("scope")?.split(",")).toEqual(expected);
+    expect(metaOAuthRequestedScopes(selectedConfig)).toEqual(expected);
+    expect(metaOAuthRequestedScopes()).toEqual([
+      "pages_show_list", "pages_read_engagement", "instagram_basic",
+      "pages_manage_posts", "instagram_content_publish",
+    ]);
+  });
+
   it("solicita exatamente os cinco scopes de publicação Meta sem insights", () => {
     const client = clientWith(vi.fn<typeof fetch>());
     const url = new URL(client.buildAuthorizationUrl(state));

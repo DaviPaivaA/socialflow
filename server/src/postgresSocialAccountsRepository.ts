@@ -246,9 +246,10 @@ async function assertContextWith(
   }
 }
 
-async function lockMetaAuthorizationContextWith(
+async function assertMetaAuthorizationContextWith(
   client: PoolClient,
   context: MetaAuthorizationContext,
+  lock = false,
 ): Promise<void> {
   const result = await client.query(
     `
@@ -263,15 +264,15 @@ async function lockMetaAuthorizationContextWith(
        AND request_row.membership_id = session.membership_id
       WHERE session.id = $3::uuid
         AND session.membership_id = $4::uuid
-        AND session.expires_at > now()
+        AND session.expires_at > clock_timestamp()
         AND member.tenant_id = $1::uuid
         AND member.user_id = $2::uuid
         AND app_user.is_active
         AND request_row.provider = 'meta'::social_platform
         AND request_row.state_hash = $5
         AND request_row.consumed_at IS NOT NULL
-        AND request_row.expires_at > now()
-      FOR UPDATE OF session, request_row
+        AND request_row.expires_at > clock_timestamp()
+      ${lock ? "FOR UPDATE OF session, request_row" : ""}
     `,
     [
       context.tenantId,
@@ -560,7 +561,9 @@ export class PostgresSocialAccountsRepository
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await lockMetaAuthorizationContextWith(client, context);
+      await assertMetaAuthorizationContextWith(client, context, true);
+      // WHERE may have been evaluated before waiting for the context locks.
+      await assertMetaAuthorizationContextWith(client, context);
       const connection = await client.query<CreatedConnectionRow>(
         `
           INSERT INTO oauth_connections (
@@ -786,6 +789,9 @@ export class PostgresSocialAccountsRepository
         }
         persisted.push(account);
       }
+      // Later writes can also wait (connection/account/credential locks). Reject
+      // and roll back every change if authority expired during those waits.
+      await assertMetaAuthorizationContextWith(client, context);
       await client.query("COMMIT");
       return persisted;
     } catch (error) {

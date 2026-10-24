@@ -6,6 +6,7 @@ import {
   MetaOAuthClientError,
   type EnabledMetaOAuthConfig,
   type MetaOAuthProviderClient,
+  type MetaPermission,
 } from "../src/metaOAuthClient.ts";
 import {
   MetaOAuthFlowError,
@@ -139,6 +140,44 @@ const callback = {
 };
 
 describe("MetaOAuthService", () => {
+  // Catches persisting requested/old scopes instead of this authorization's grants.
+  it("mantém discovery e tokens quando Insights é parcial ou recusado na reconexão", async () => {
+    const persisted: PersistMetaAuthorizationInput[] = [];
+    const cipher = new SocialTokenCipher(Buffer.alloc(32, 21));
+    const publishingPermissions = [
+      "pages_show_list", "pages_read_engagement", "instagram_basic",
+      "pages_manage_posts", "instagram_content_publish",
+    ].map((name) => ({ name, status: "granted" as const }));
+    let insightsPermissions: MetaPermission[] = [
+      { name: "read_insights", status: "granted" as const },
+      { name: "instagram_manage_insights", status: "declined" as const },
+    ];
+    const client = fakeClient({ getPermissions: async () => [...publishingPermissions, ...insightsPermissions] });
+    const service = new MetaOAuthService(
+      { ...config, insightsEnabled: true }, client, fakeStateRepository(),
+      fakeSocialRepository(vi.fn(async (_context, input) => {
+        persisted.push(input);
+        return publicAccounts;
+      })), cipher,
+    );
+    await service.complete(context, callback);
+    // A fresh provider response revokes previously granted Insights permissions.
+    insightsPermissions = [
+      { name: "read_insights", status: "expired" },
+      { name: "instagram_manage_insights", status: "declined" },
+    ];
+    await service.complete(context, callback);
+    expect(persisted.map((input) => input.grantedScopes)).toEqual([
+      ["pages_show_list", "pages_read_engagement", "instagram_basic", "pages_manage_posts", "instagram_content_publish", "read_insights"],
+      ["pages_show_list", "pages_read_engagement", "instagram_basic", "pages_manage_posts", "instagram_content_publish"],
+    ]);
+    for (const input of persisted) {
+      expect(input.accounts.map((account) => account.provider)).toEqual(["facebook", "instagram"]);
+      expect(cipher.decryptSecret(input.userAccessTokenEncrypted)).toBe("long-user-token");
+      expect(input.accounts.map((account) => cipher.decryptSecret(account.accessTokenEncrypted))).toEqual(["page-access-token", "page-access-token"]);
+    }
+  });
+
   it("gera state aleatório e persiste somente SHA-256 com expiração", async () => {
     const stateRepository = fakeStateRepository();
     const client = fakeClient();

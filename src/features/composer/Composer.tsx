@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import type { CreatePostInput } from "../../data/posts/PostsRepository";
 import type { MediaAssetsRepository } from "../../data/media/MediaAssetsRepository";
@@ -9,6 +9,8 @@ import { ComposerDestinations } from "./ComposerDestinations";
 import { ComposerMediaPicker } from "./ComposerMediaPicker";
 import { useComposerDestinations } from "./useComposerDestinations";
 import { useComposerMedia } from "./useComposerMedia";
+import { TikTokLocalComposer } from "../tiktok/TikTokLocalComposer";
+import { useDialogFocus } from "../../components/useDialogFocus";
 
 type ComposerProps = {
   isLoadingPosts: boolean;
@@ -21,7 +23,11 @@ type ComposerProps = {
   workspaceId: string;
 };
 
-export function Composer({
+export function Composer(props: ComposerProps) {
+  return <ComposerContent key={props.workspaceId} {...props} />;
+}
+
+function ComposerContent({
   isLoadingPosts,
   isSubmitting,
   mediaAssetsRepository,
@@ -31,6 +37,9 @@ export function Composer({
   onSubmit,
   workspaceId,
 }: ComposerProps) {
+  const dialogRef = useRef<HTMLFormElement>(null);
+  const titleId = useId();
+  useDialogFocus(dialogRef, onClose);
   const [initialSchedule] = useState(() => {
     const nextHour = new Date();
     nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
@@ -47,6 +56,7 @@ export function Composer({
   const destinations = useComposerDestinations({ repository: socialAccountsRepository, workspaceId });
   const [failedPreviewSrc, setFailedPreviewSrc] = useState<string | null>(null);
   const [previewRetry, setPreviewRetry] = useState(0);
+  const [tiktokSelected, setTikTokSelected] = useState(false);
 
   const changeCaption = (value: string) => {
     onDraftChange();
@@ -81,6 +91,7 @@ export function Composer({
     .flatMap(({ provider }) => provider === "facebook" || provider === "instagram" ? [provider] : []);
   const hasFacebook = selectedProviders.includes("facebook");
   const hasInstagram = selectedProviders.includes("instagram");
+  const tiktokOnly = tiktokSelected && selectedProviders.length === 0;
   const compatibility = selectedProviders.length > 0
     ? validatePublicationCompatibility({
       providers: selectedProviders, media: selectedMedia, caption: caption.trim(),
@@ -123,33 +134,34 @@ export function Composer({
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <form className="composer-modal" onSubmit={submit}>
+      <form className="composer-modal" onSubmit={submit} ref={dialogRef}
+        role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
         <div className="modal-header">
-          <div><span>NOVO CONTEÚDO</span><h2>Criar publicação</h2></div>
+          <div><span>NOVO CONTEÚDO</span><h2 id={titleId}>Criar publicação</h2></div>
           <button aria-label="Fechar" onClick={onClose} type="button">×</button>
         </div>
         <div className="composer-body">
           <div className="composer-fields">
-            <label className="field-label">Legenda<textarea value={caption} onChange={(event) => changeCaption(event.target.value)} placeholder="Conte a história por trás desta publicação..." maxLength={500} required /><small>{caption.length}/500</small></label>
+            {!tiktokOnly && <label className="field-label">Legenda<textarea aria-label="Legenda" value={caption} onChange={(event) => changeCaption(event.target.value)} placeholder="Conte a história por trás desta publicação..." maxLength={500} required /><small>{caption.length}/500 · Facebook / Instagram</small></label>}
             <ComposerDestinations destinations={destinations} onToggle={toggleDestination} />
-            <fieldset className="composer-mode" disabled={!hasAccounts}>
+            <fieldset className="composer-mode" disabled={!hasAccounts || tiktokOnly}>
               <legend>Publicação</legend>
               <label><input checked={publicationMode === "now"} onChange={() => changeMode("now")} name="publicationMode" type="radio" />Publicar agora</label>
               <label><input checked={publicationMode === "scheduled"} onChange={() => changeMode("scheduled")} name="publicationMode" type="radio" />Agendar</label>
             </fieldset>
-            {publicationMode === "scheduled" ? <><div className="date-fields">
+            {publicationMode === "scheduled" && !tiktokOnly ? <><div className="date-fields">
               <label className="field-label">Data<input type="date" value={date} onChange={(event) => changeDate(event.target.value)} required /></label>
               <label className="field-label">Horário<input type="time" value={time} onChange={(event) => changeTime(event.target.value)} required /></label>
             </div>
             <div className="best-time"><span>✦</span><div><strong>Agendamento</strong><p>Escolha a data e o horário da publicação.</p></div></div></> : null}
-            <ComposerMediaPicker media={media} repository={mediaAssetsRepository} />
+            {!tiktokOnly && <><p>Mídia Facebook / Instagram — biblioteca e envio Meta</p><ComposerMediaPicker media={media} repository={mediaAssetsRepository} /></>}
             {mediaError ? <p className="composer-format-error" role="alert">{mediaError}</p> : null}
             {selectedMedia?.mediaType === "video" && selectedProviders.length > 0 ? <p role="status">
               O vídeo usa o formato Reel.{hasFacebook ? " Na Facebook Page, a audiência é pública." : ""}
               {" Orientação: H264/AAC, 9:16, 3–90 segundos e 24–60 FPS. O SocialFlow não verifica localmente codec, duração, FPS ou proporção; a aceitação do arquivo depende da Meta."}
             </p> : null}
           </div>
-          <div className="composer-preview">
+          {!tiktokOnly && <div className="composer-preview">
             <span>PRÉ-VISUALIZAÇÃO</span>
             <div className="social-preview">
               <div className="social-user"><div className="avatar tiny">SF</div><div><strong>Seu perfil</strong><span>Prévia ilustrativa</span></div><b>•••</b></div>
@@ -165,8 +177,9 @@ export function Composer({
               <div className="social-actions">♡　⌁　➤ <span>▣</span></div>
               <p><strong>Seu perfil</strong> {caption || "Sua legenda aparecerá aqui..."}</p>
             </div>
-          </div>
+          </div>}
         </div>
+        <TikTokLocalComposer selected={tiktokSelected} onSelect={setTikTokSelected} metaSelected={selectedProviders.length > 0} onDraftChange={onDraftChange} />
         <div className="modal-footer">
           <button
             className="secondary-button"

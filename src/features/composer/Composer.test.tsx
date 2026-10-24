@@ -307,7 +307,7 @@ describe("Composer destinos e publicação", () => {
       expect(button).toBeDisabled();
       expect(screen.getByRole("alert")).toBeInTheDocument();
     }
-    for (const checkbox of screen.getAllByRole("checkbox")) expect(checkbox).toBeChecked();
+    for (const checkbox of within(screen.getByRole("region", { name: "Destinos" })).getAllByRole("checkbox")) expect(checkbox).toBeChecked();
     if (asset) expect(screen.getByRole("button", { name: `Selecionar ${asset.originalFilename}` })).toHaveAttribute("aria-pressed", "true");
     submitGuardedForm();
     if (valid) expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({

@@ -149,7 +149,9 @@ describe("SocialFlow", () => {
     await user.click(screen.getByRole("button", { name: "＋ Criar publicação" }));
     const composer = screen.getByRole("textbox", { name: /Legenda/ });
     fireEvent.keyDown(document, { key: "k", ctrlKey: true });
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.getByRole("dialog", { name: "Criar publicação" })).toContainElement(composer);
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: /Legenda/ })).toBe(composer);
     expect(screen.getByRole("button", { name: "Ajuda" })).toBeDisabled();
   });

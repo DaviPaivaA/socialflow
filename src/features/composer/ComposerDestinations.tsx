@@ -1,4 +1,5 @@
 import type { ComposerDestinationsState } from "./useComposerDestinations";
+import { TikTokComingSoon } from "../../components/TikTokComingSoon";
 
 type ComposerDestinationsProps = {
   destinations: ComposerDestinationsState;
@@ -28,5 +29,6 @@ export function ComposerDestinations({ destinations, onToggle }: ComposerDestina
       <p>Conta selecionada indisponível — {id}. Remova a seleção ou reconecte em Canais.</p>
       <button type="button" onClick={() => onToggle(id)}>Remover conta {id}</button>
     </div>)}
+    <TikTokComingSoon />
   </section>;
 }

@@ -204,6 +204,7 @@ describe("configuração de sessão", () => {
       appId: null,
       appSecret: null,
       enabled: false,
+      insightsEnabled: false,
       graphApiVersion: "v26.0",
       redirectUri: null,
       stateTtlSeconds: 600,
@@ -227,11 +228,27 @@ describe("configuração de sessão", () => {
       appId: "123456789012345",
       appSecret: "segredo-meta-exclusivo-123456",
       enabled: true,
+      insightsEnabled: false,
       graphApiVersion: "v26.0",
       redirectUri: "http://localhost:3001/auth/meta/callback",
       stateTtlSeconds: 900,
     });
     expect(config.sessionCookie.sameSite).toBe("Lax");
+  });
+
+  // Catches missing default-off parsing and permissive truthy configuration.
+  it.each([
+    [undefined, false], ["", false], ["false", false], ["true", true],
+  ])("configura Insights OAuth opcional com %s", (value, expected) => {
+    expect(loadServerConfig({
+      ...baseEnvironment, META_INSIGHTS_OAUTH_ENABLED: value,
+    }).metaOAuth.insightsEnabled).toBe(expected);
+  });
+
+  it.each(["yes", "1", "TRUE", " true "])("rejeita opt-in Insights inválido %s", (value) => {
+    expect(() => loadServerConfig({
+      ...baseEnvironment, META_INSIGHTS_OAUTH_ENABLED: value,
+    })).toThrow('META_INSIGHTS_OAUTH_ENABLED deve ser "true" ou "false"');
   });
 
   it("rejeita SameSite=Strict quando OAuth Meta está habilitado", () => {
