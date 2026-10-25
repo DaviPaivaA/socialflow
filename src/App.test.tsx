@@ -231,7 +231,9 @@ describe("SocialFlow", () => {
     expect(screen.queryByText("3", { selector: "nav b" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Análises/ }));
-    expect(screen.getAllByText(/Dados de análise ainda não disponíveis/)).toHaveLength(2);
+    expect(screen.getByText("Métricas indisponíveis.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Gráfico sem dados")).toBeInTheDocument();
+    expect(screen.getByText("Sem dados para destacar conteúdo.")).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(/214 mil|14\.280|3\.842|18,9k|1\.482|7,8%/);
 
     await user.click(screen.getByRole("button", { name: /Agenda/ }));

@@ -23,7 +23,7 @@ describe("Navegação App com interface TikTok 11A", () => {
     const nav = within(screen.getByRole("navigation", { name: "Navegação principal" }));
     fireEvent.click(nav.getByRole("button", { name: /Canais/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Conectar TikTok" }));
-    expect(screen.getByRole("status")).toHaveTextContent(/não está habilitada/);
+    expect(screen.getByRole("status")).toHaveTextContent("Conexão TikTok indisponível.");
     const lists = vi.mocked(input.socialAccountsRepository.list).mock.calls.length;
     fireEvent.click(nav.getByRole("button", { name: /Agenda/ }));
     fireEvent.change(screen.getByLabelText("Plataforma da agenda"), { target: { value: "tiktok" } });
@@ -45,21 +45,23 @@ describe("Navegação App com interface TikTok 11A", () => {
     fireEvent.click(screen.getByRole("button", { name: "＋ Criar publicação" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Facebook — Café Aurora" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Legenda" }), { target: { value: "Meta somente" } });
-    fireEvent.click(screen.getByRole("checkbox", { name: "TikTok — prévia local" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "TikTok" }));
     fireEvent.submit(screen.getByRole("button", { name: "Publicar agora" }).closest("form")!);
     await waitFor(() => expect(input.repository.create).toHaveBeenCalledTimes(1));
-    fireEvent.change(screen.getByLabelText("Vídeo TikTok local"), { target: { files: [new File(["private"], "private.mp4", { type: "video/mp4" })] } });
-    fireEvent.change(screen.getByRole("textbox", { name: "Legenda TikTok local" }), { target: { value: "TT permanece" } });
+    fireEvent.click(screen.getByRole("tab", { name: "TikTok" }));
+    fireEvent.change(screen.getByLabelText("Vídeo TikTok"), { target: { files: [new File(["private"], "private.mp4", { type: "video/mp4" })] } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Legenda TikTok" }), { target: { value: "TT permanece" } });
     const post = { ...initialPosts[0], status: "published" as const, caption: "Meta somente", tenantId: demoAuthSession.tenant.id };
     await act(async () => resolve({ post, publications: [{ id: "publication", postId: post.id, tenantId: post.tenantId, socialAccountId: "70000000-0000-4000-8000-000000000002", status: "published", createdAt: post.createdAt, updatedAt: post.updatedAt, errorCode: null, errorMessage: null, failedAt: null, startedAt: null, publishedAt: post.updatedAt, providerPostId: "remote" }] }));
-    expect(screen.getByRole("textbox", { name: "Legenda TikTok local" })).toHaveValue("TT permanece");
+    expect(screen.getByRole("textbox", { name: "Legenda TikTok" })).toHaveValue("TT permanece");
     expect(input.repository.create).toHaveBeenCalledWith(expect.objectContaining({ caption: "Meta somente", mediaAssetIds: [] }));
     expect(JSON.stringify(vi.mocked(input.repository.create).mock.calls)).not.toMatch(/private|TT permanece|blob:/);
     fireEvent.click(screen.getByRole("button", { name: "Fechar sem salvar" }));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:private");
     fireEvent.click(screen.getByRole("button", { name: "＋ Criar publicação" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "TikTok — prévia local" }));
-    expect(screen.getByRole("textbox", { name: "Legenda TikTok local" })).toHaveValue("");
+    fireEvent.click(screen.getByRole("checkbox", { name: "TikTok" }));
+    fireEvent.click(screen.getByRole("tab", { name: "TikTok" }));
+    expect(screen.getByRole("textbox", { name: "Legenda TikTok" })).toHaveValue("");
   });
 
   it("trocar Workspace pelo App desmonta o compositor e descarta arquivos locais", async () => {
@@ -71,11 +73,12 @@ describe("Navegação App com interface TikTok 11A", () => {
     const revokeObjectURL = vi.fn(); vi.stubGlobal("URL", Object.assign(class extends URL {}, { createObjectURL: vi.fn().mockReturnValue("blob:workspace-a"), revokeObjectURL }));
     render(<App {...input} authRepository={authRepository} initialAuthSession={demoAuthSession} />);
     fireEvent.click(screen.getByRole("button", { name: "＋ Criar publicação" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "TikTok — prévia local" }));
-    fireEvent.change(screen.getByLabelText("Vídeo TikTok local"), { target: { files: [new File(["video"], "a.mp4", { type: "video/mp4" })] } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "TikTok" }));
+    fireEvent.click(screen.getByRole("tab", { name: "TikTok" }));
+    fireEvent.change(screen.getByLabelText("Vídeo TikTok"), { target: { files: [new File(["video"], "a.mp4", { type: "video/mp4" })] } });
     fireEvent.change(await screen.findByLabelText("Workspace ativo"), { target: { value: tenant.id } });
     await waitFor(() => expect(screen.getByLabelText("Workspace ativo")).toHaveValue(tenant.id));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:workspace-a");
-    expect(screen.queryByRole("textbox", { name: "Legenda TikTok local" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Legenda TikTok" })).not.toBeInTheDocument();
   });
 });

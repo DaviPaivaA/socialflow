@@ -31,9 +31,12 @@ function props(workspaceId = "workspace-a") {
   return { workspaceId, mediaAssetsRepository, socialAccountsRepository,
     isLoadingPosts: false, isSubmitting: false, onClose: vi.fn(), onDraftChange: vi.fn(), onSubmit: vi.fn() };
 }
-function selectTikTok() { fireEvent.click(screen.getByRole("checkbox", { name: "TikTok — prévia local" })); }
+function selectTikTok() {
+  fireEvent.click(screen.getByRole("checkbox", { name: "TikTok" }));
+  fireEvent.click(screen.getByRole("tab", { name: "TikTok" }));
+}
 function chooseVideo(file = new File(["video"], "local.mp4", { type: "video/mp4" })) {
-  fireEvent.change(screen.getByLabelText("Vídeo TikTok local"), { target: { files: [file] } });
+  fireEvent.change(screen.getByLabelText("Vídeo TikTok"), { target: { files: [file] } });
 }
 beforeEach(() => {
   createObjectURL.mockReset().mockImplementation(() => `blob:local-${createObjectURL.mock.calls.length}`);
@@ -53,7 +56,7 @@ describe("TikTok 11A: experiência exclusivamente local", () => {
       const videoName = `${"video-sem-espacos".repeat(30)}.mp4`;
       const posterName = `${"capa-sem-espacos".repeat(30)}.png`;
       chooseVideo(new File(["video"], videoName, { type: "video/mp4" }));
-      fireEvent.change(screen.getByLabelText("Capa TikTok local (opcional)"), { target: { files: [new File(["cover"], posterName, { type: "image/png" })] } });
+      fireEvent.change(screen.getByLabelText("Capa TikTok"), { target: { files: [new File(["cover"], posterName, { type: "image/png" })] } });
       for (const name of [videoName, posterName]) {
         const filename = screen.getByText(name);
         expect(filename.textContent).toBe(name);
@@ -70,8 +73,9 @@ describe("TikTok 11A: experiência exclusivamente local", () => {
     render(<TikTokComingSoon />);
     const button = screen.getByRole("button", { name: "Conectar TikTok" });
     expect(button).toBeEnabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(button);
-    expect(screen.getByRole("status")).toHaveTextContent(/integração.*não.*habilitada/i);
+    expect(screen.getByRole("status")).toHaveTextContent("Conexão TikTok indisponível.");
     expect(screen.queryByText(/conectad[ao] com sucesso/i)).not.toBeInTheDocument();
   });
 
@@ -81,18 +85,18 @@ describe("TikTok 11A: experiência exclusivamente local", () => {
     const lists = [vi.mocked(input.mediaAssetsRepository.list).mock.calls.length, vi.mocked(input.socialAccountsRepository.list).mock.calls.length];
     selectTikTok();
     chooseVideo();
-    fireEvent.change(screen.getByLabelText("Capa TikTok local (opcional)"), { target: { files: [new File(["cover"], "cover.webp", { type: "image/webp" })] } });
-    fireEvent.change(screen.getByRole("textbox", { name: "Legenda TikTok local" }), { target: { value: "Legenda privada TT" } });
-    expect(screen.getByText("18 caracteres · somente neste compositor")).toBeInTheDocument();
-    const preview = screen.getByLabelText("Prévia TikTok local");
+    fireEvent.change(screen.getByLabelText("Capa TikTok"), { target: { files: [new File(["cover"], "cover.webp", { type: "image/webp" })] } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Legenda TikTok" }), { target: { value: "Legenda privada TT" } });
+    expect(screen.getByText("18 caracteres")).toBeInTheDocument();
+    const preview = screen.getByLabelText("Prévia da publicação TikTok");
     expect(preview.querySelector("video")).toHaveAttribute("src", "blob:local-1");
     expect(preview.querySelector("video")).toHaveAttribute("poster", "blob:local-2");
     expect(preview.querySelector("video")).toHaveAttribute("controls");
     expect(preview.querySelector("video")).not.toHaveAttribute("autoplay");
     fireEvent.loadedMetadata(preview.querySelector("video")!);
     expect(within(preview).queryByText(/carregando vídeo/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Publicar agora" })).toBeDisabled();
-    fireEvent.submit(screen.getByRole("button", { name: "Publicar agora" }).closest("form")!);
+    expect(screen.getByRole("button", { name: "Publicar no TikTok" })).toHaveAttribute("aria-disabled", "true");
+    fireEvent.submit(screen.getByRole("dialog"));
     expect(input.onSubmit).not.toHaveBeenCalled();
     expect(input.mediaAssetsRepository.upload).not.toHaveBeenCalled();
     expect(input.socialAccountsRepository.startMetaOAuth).not.toHaveBeenCalled();
@@ -107,8 +111,10 @@ describe("TikTok 11A: experiência exclusivamente local", () => {
     fireEvent.click(await screen.findByRole("checkbox", { name: "Facebook — Página real" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Legenda" }), { target: { value: "Meta pública" } });
     selectTikTok(); chooseVideo();
-    fireEvent.change(screen.getByRole("textbox", { name: "Legenda TikTok local" }), { target: { value: "TT secreta" } });
-    expect(screen.getByText(/somente Facebook e Instagram serão enviados/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "Legenda TikTok" }), { target: { value: "TT secreta" } });
+    fireEvent.submit(screen.getByRole("dialog"));
+    expect(input.onSubmit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("tab", { name: "Facebook e Instagram" }));
     fireEvent.submit(screen.getByRole("button", { name: "Publicar agora" }).closest("form")!);
     expect(input.onSubmit).toHaveBeenCalledWith({ title: "Meta pública", caption: "Meta pública", socialAccountIds: ["facebook-id"], mediaAssetIds: [], publicationMode: "now" });
     expect(input.mediaAssetsRepository.upload).not.toHaveBeenCalled();
@@ -118,8 +124,8 @@ describe("TikTok 11A: experiência exclusivamente local", () => {
     const input = props(); const view = render(<StrictMode><Composer {...input} /></StrictMode>);
     await screen.findByRole("checkbox", { name: "Facebook — Página real" });
     selectTikTok(); chooseVideo();
-    const oldVideo = screen.getByLabelText("Prévia TikTok local").querySelector("video")!;
-    fireEvent.change(screen.getByRole("textbox", { name: "Legenda TikTok local" }), { target: { value: "segredo" } });
+    const oldVideo = screen.getByLabelText("Prévia da publicação TikTok").querySelector("video")!;
+    fireEvent.change(screen.getByRole("textbox", { name: "Legenda TikTok" }), { target: { value: "segredo" } });
     chooseVideo(new File(["replacement"], "second.webm", { type: "video/webm" }));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:local-1");
     fireEvent.error(oldVideo);
@@ -129,9 +135,9 @@ describe("TikTok 11A: experiência exclusivamente local", () => {
     chooseVideo();
     view.rerender(<StrictMode><Composer {...input} workspaceId="workspace-b" /></StrictMode>);
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:local-3");
-    expect(screen.getByRole("checkbox", { name: "TikTok — prévia local" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "TikTok" })).not.toBeChecked();
     selectTikTok();
-    expect(screen.getByRole("textbox", { name: "Legenda TikTok local" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Legenda TikTok" })).toHaveValue("");
     chooseVideo(); view.unmount();
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:local-4");
   });
@@ -149,13 +155,13 @@ describe("TikTok 11A: experiência exclusivamente local", () => {
   it("oferece retry para falha de URL/reprodução sem enviar arquivo", async () => {
     render(<Composer {...props()} />); await screen.findByRole("checkbox", { name: "Facebook — Página real" });
     selectTikTok(); createObjectURL.mockImplementationOnce(() => { throw new Error("indisponível"); }); chooseVideo();
-    expect(screen.getByRole("alert")).toHaveTextContent(/prévia local/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/prévia/i);
     fireEvent.click(screen.getByRole("button", { name: "Tentar novamente vídeo TikTok" }));
-    const video = screen.getByLabelText("Prévia TikTok local").querySelector("video")!;
+    const video = screen.getByLabelText("Prévia da publicação TikTok").querySelector("video")!;
     fireEvent.error(video);
     expect(screen.getByRole("alert")).toHaveTextContent(/reproduzir/i);
     fireEvent.click(screen.getByRole("button", { name: "Tentar novamente vídeo TikTok" }));
-    expect(screen.getByLabelText("Prévia TikTok local").querySelector("video")).toBeInTheDocument();
+    expect(screen.getByLabelText("Prévia da publicação TikTok").querySelector("video")).toBeInTheDocument();
   });
 
   it.each([
@@ -168,40 +174,40 @@ describe("TikTok 11A: experiência exclusivamente local", () => {
     await screen.findByRole("checkbox", { name: "Facebook — Página real" }); selectTikTok();
     const file = new File(["x"], "arquivo-local", { type });
     Object.defineProperty(file, "size", { value: size });
-    fireEvent.change(screen.getByLabelText(kind === "video" ? "Vídeo TikTok local" : "Capa TikTok local (opcional)"), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText(kind === "video" ? "Vídeo TikTok" : "Capa TikTok"), { target: { files: [file] } });
     expect(screen.getByRole("alert")).toHaveTextContent(message);
     expect(createObjectURL).not.toHaveBeenCalled(); expect(input.mediaAssetsRepository.upload).not.toHaveBeenCalled();
   });
 
   it.each(["image/jpeg", "image/png", "image/webp"])("aceita capa %s, trata erro/retry e revoga na remoção", async (type) => {
     render(<Composer {...props()} />); await screen.findByRole("checkbox", { name: "Facebook — Página real" }); selectTikTok(); chooseVideo();
-    fireEvent.change(screen.getByLabelText("Capa TikTok local (opcional)"), { target: { files: [new File(["cover"], "cover", { type })] } });
-    fireEvent.error(screen.getByRole("img", { name: "Capa TikTok local" }));
-    expect(screen.getByRole("alert")).toHaveTextContent(/exibir a capa local/i);
-    expect(screen.getByLabelText("Prévia TikTok local").querySelector("video")).not.toHaveAttribute("poster");
+    fireEvent.change(screen.getByLabelText("Capa TikTok"), { target: { files: [new File(["cover"], "cover", { type })] } });
+    fireEvent.error(screen.getByRole("img", { name: "Capa TikTok" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(/exibir a capa/i);
+    expect(screen.getByLabelText("Prévia da publicação TikTok").querySelector("video")).not.toHaveAttribute("poster");
     fireEvent.click(screen.getByRole("button", { name: "Tentar novamente capa TikTok" }));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:local-2");
-    fireEvent.load(screen.getByRole("img", { name: "Capa TikTok local" }));
-    expect(screen.queryByText("Carregando capa local...")).not.toBeInTheDocument();
+    fireEvent.load(screen.getByRole("img", { name: "Capa TikTok" }));
+    expect(screen.queryByText("Carregando capa...")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Remover capa TikTok" }));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:local-3");
-    expect(screen.getByLabelText("Prévia TikTok local").querySelector("video")).not.toHaveAttribute("poster");
+    expect(screen.getByLabelText("Prévia da publicação TikTok").querySelector("video")).not.toHaveAttribute("poster");
   });
 
   it("ignora eventos de capa/vídeo antigos após substituir e revoga todos os recursos ao desmarcar", async () => {
     render(<StrictMode><Composer {...props()} /></StrictMode>);
     await screen.findByRole("checkbox", { name: "Facebook — Página real" }); selectTikTok(); chooseVideo();
-    const oldVideo = screen.getByLabelText("Prévia TikTok local").querySelector("video")!;
-    const coverInput = screen.getByLabelText("Capa TikTok local (opcional)");
+    const oldVideo = screen.getByLabelText("Prévia da publicação TikTok").querySelector("video")!;
+    const coverInput = screen.getByLabelText("Capa TikTok");
     const cover = new File(["cover"], "cover.png", { type: "image/png" });
     Object.defineProperty(cover, "size", { value: 10_485_760 });
     fireEvent.change(coverInput, { target: { files: [cover] } });
-    const oldCover = screen.getByRole("img", { name: "Capa TikTok local" });
+    const oldCover = screen.getByRole("img", { name: "Capa TikTok" });
     chooseVideo(); fireEvent.change(coverInput, { target: { files: [cover] } });
     fireEvent.error(oldCover); fireEvent.error(oldVideo); fireEvent.loadedMetadata(oldVideo);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Prévia TikTok local").querySelector("video")).toHaveAttribute("src", "blob:local-3");
-    expect(screen.getByLabelText("Prévia TikTok local").querySelector("video")).toHaveAttribute("poster", "blob:local-4");
+    expect(screen.getByLabelText("Prévia da publicação TikTok").querySelector("video")).toHaveAttribute("src", "blob:local-3");
+    expect(screen.getByLabelText("Prévia da publicação TikTok").querySelector("video")).toHaveAttribute("poster", "blob:local-4");
     selectTikTok();
     expect(revokeObjectURL.mock.calls.map(([url]) => url).sort()).toEqual(["blob:local-1", "blob:local-2", "blob:local-3", "blob:local-4"]);
   });
@@ -209,15 +215,15 @@ describe("TikTok 11A: experiência exclusivamente local", () => {
   it("aceita o teto local exato, descarta no desmarcar e não persiste nem usa o upload Meta no modo TT", async () => {
     const input = props(); const setItem = vi.spyOn(Storage.prototype, "setItem");
     render(<Composer {...input} />); await screen.findByRole("checkbox", { name: "Facebook — Página real" }); selectTikTok();
-    expect(screen.queryByLabelText("Enviar foto ou vídeo")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Enviar foto ou vídeo").closest('[role="tabpanel"]')).toHaveAttribute("hidden");
     expect(screen.queryByRole("textbox", { name: "Legenda" })).not.toBeInTheDocument();
     const file = new File(["x"], "teto.webm", { type: "video/webm" }); Object.defineProperty(file, "size", { value: 104_857_600 }); chooseVideo(file);
-    fireEvent.change(screen.getByRole("textbox", { name: "Legenda TikTok local" }), { target: { value: "local".repeat(200) } });
-    expect(screen.getByText("1000 caracteres · somente neste compositor")).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Legenda TikTok local" })).not.toHaveAttribute("maxlength");
+    fireEvent.change(screen.getByRole("textbox", { name: "Legenda TikTok" }), { target: { value: "local".repeat(200) } });
+    expect(screen.getByText("1000 caracteres")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Legenda TikTok" })).not.toHaveAttribute("maxlength");
     expect(input.onDraftChange).toHaveBeenCalledTimes(3);
     selectTikTok(); expect(revokeObjectURL).toHaveBeenCalledWith("blob:local-1");
-    selectTikTok(); expect(screen.getByRole("textbox", { name: "Legenda TikTok local" })).toHaveValue("");
+    selectTikTok(); expect(screen.getByRole("textbox", { name: "Legenda TikTok" })).toHaveValue("");
     expect(setItem).not.toHaveBeenCalled(); setItem.mockRestore();
     expect(input.onSubmit).not.toHaveBeenCalled(); expect(input.mediaAssetsRepository.upload).not.toHaveBeenCalled();
   });
@@ -225,7 +231,7 @@ describe("TikTok 11A: experiência exclusivamente local", () => {
   it("agenda TikTok é vazia real e filtros Meta sem associação não dizem zero", () => {
     render(<Agenda loadState="success" onCompose={vi.fn()} posts={[]} />);
     fireEvent.change(screen.getByLabelText("Plataforma da agenda"), { target: { value: "tiktok" } });
-    expect(screen.getByText(/agendamento TikTok.*bloqueado/i)).toBeInTheDocument();
+    expect(screen.getByText("Nenhuma publicação agendada.")).toBeInTheDocument();
     expect(document.querySelectorAll(".calendar-day")).toHaveLength(7);
     fireEvent.change(screen.getByLabelText("Plataforma da agenda"), { target: { value: "facebook" } });
     expect(screen.getByText(/identificação.*indisponível/i)).toBeInTheDocument();

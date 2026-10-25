@@ -398,15 +398,16 @@ export function Channels({
           return (
             <article className="panel channel-card" key={account.id}>
               <div className="channel-card-top">
-                {account.profileImageUrl ? (
-                  <img
-                    alt={`Perfil de ${account.displayName}`}
-                    className="channel-profile-image"
-                    src={account.profileImageUrl}
-                  />
-                ) : (
+                <div className="channel-identity-icons">
+                  {account.profileImageUrl && (
+                    <img
+                      alt={`Perfil de ${account.displayName}`}
+                      className="channel-profile-image"
+                      src={account.profileImageUrl}
+                    />
+                  )}
                   <ChannelBadge code={provider.code} />
-                )}
+                </div>
                 <span
                   className={`connected-dot channel-status--${isComingSoon ? "pending" : account.status}`}
                 >
@@ -414,11 +415,8 @@ export function Channels({
                 </span>
               </div>
               <h2>{account.displayName}</h2>
+              <p className="channel-platform">{provider.label}</p>
               <p>{accountHandle(account)}</p>
-              <div className="channel-numbers">
-                <strong>{provider.label}</strong>
-                <span>provedor</span>
-              </div>
               <div className="channel-health">
                 <span>{isComingSoon ? "Integração" : "Credencial"}</span>
                 <b>{isComingSoon ? "Registro legado · somente leitura" : expirationLabel(account)}</b>
@@ -458,10 +456,30 @@ export function Channels({
             </article>
           );
         })}
+        {(["facebook", "instagram"] as const)
+          .filter((provider) => !accounts.some((account) => account.provider === provider))
+          .map((provider) => (
+            <article className="panel channel-card channel-card--disconnected" key={provider}>
+              <div className="channel-card-top">
+                <ChannelBadge code={providerDetails[provider].code} />
+                <span className="connected-dot channel-status--pending"><i />Não conectado</span>
+              </div>
+              <h2>{providerDetails[provider].label}</h2>
+              <p>Nenhuma conta conectada a este Workspace.</p>
+              <button
+                className="secondary-button full"
+                disabled={isStartingMeta || !repository.startMetaOAuth}
+                onClick={() => void startMetaOAuth()}
+                type="button"
+              >
+                Conectar {providerDetails[provider].label}
+              </button>
+            </article>
+          ))}
         <article className="panel channel-card tiktok-channel">
           <div className="channel-card-top"><ChannelBadge code="TT" /><span className="connected-dot channel-status--pending"><i />Não conectado</span></div>
           <h2>TikTok</h2>
-          <p>Nenhum perfil TikTok conectado. Avatar e nome de usuário indisponíveis.</p>
+          <p>Nenhum perfil conectado.</p>
           <TikTokComingSoon key={workspaceId} />
         </article>
         <div className="add-channel-card">
@@ -484,7 +502,7 @@ export function Channels({
             </button>
           </div>
           {!repository.startMetaOAuth && (
-            <small>Conexões reais ficam disponíveis no modo HTTP.</small>
+            <small>Conexão Meta indisponível.</small>
           )}
         </div>
       </section>

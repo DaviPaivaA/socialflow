@@ -121,7 +121,50 @@ describe("Channels", () => {
     expect(
       screen.getByRole("button", { name: "Conectar Facebook / Instagram" }),
     ).toBeDisabled();
-    expect(screen.getByText(/modo HTTP/)).toBeInTheDocument();
+    expect(screen.getByText("Conexão Meta indisponível.")).toBeInTheDocument();
+  });
+
+  it("preserva o nome Teste e separa a plataforma do avatar e do nome real", async () => {
+    render(<Channels repository={repository({ list: vi.fn().mockResolvedValue([
+      { ...facebook, displayName: "Teste", profileImageUrl: "https://example.invalid/avatar.png" },
+    ]) })} workspaceId={workspaceA} />, { wrapper: Wrapper });
+    const heading = await screen.findByRole("heading", { name: "Teste" });
+    const card = heading.closest("article")!;
+    expect(within(card).getByRole("img", { name: "Perfil de Teste" })).toBeInTheDocument();
+    expect(within(card).getByRole("img", { name: "Facebook" }).querySelector("svg")).not.toBeNull();
+    expect(within(card).getByText("Facebook")).not.toBe(heading);
+    expect(within(card).queryByText("provedor")).not.toBeInTheDocument();
+  });
+
+  it("mostra Instagram desconectado sem inventar uma conta quando apenas Facebook existe", async () => {
+    const startMetaOAuth = vi.fn().mockResolvedValue("https://example.invalid/meta");
+    const navigateToAuthorization = vi.fn();
+    const socialRepository = repository({ list: vi.fn().mockResolvedValue([facebook]), startMetaOAuth });
+    render(<Channels repository={socialRepository} navigateToAuthorization={navigateToAuthorization} workspaceId={workspaceA} />, { wrapper: Wrapper });
+    const card = (await screen.findByRole("heading", { name: "Instagram" })).closest("article")!;
+    expect(within(card).getByText("Não conectado")).toBeInTheDocument();
+    expect(within(card).queryByRole("img", { name: /Perfil/ })).not.toBeInTheDocument();
+    expect(within(card).queryByText(/Token|@/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Facebook" })).not.toBeInTheDocument();
+    await userEvent.setup().click(within(card).getByRole("button", { name: "Conectar Instagram" }));
+    expect(startMetaOAuth).toHaveBeenCalledExactlyOnceWith(workspaceA);
+    expect(navigateToAuthorization).toHaveBeenCalledExactlyOnceWith("https://example.invalid/meta");
+  });
+
+  it("não apresenta ausência de provedores durante loading, erro ou troca de Workspace", async () => {
+    const pending = deferred<SocialAccount[]>();
+    const next = deferred<SocialAccount[]>();
+    const socialRepository = repository({ list: vi.fn().mockReturnValueOnce(pending.promise).mockReturnValueOnce(next.promise) });
+    const view = render(<Channels repository={socialRepository} workspaceId={workspaceA} />, { wrapper: Wrapper });
+    expect(screen.queryByText("Não conectado")).not.toBeInTheDocument();
+    await act(async () => pending.resolve([facebook]));
+    expect(await screen.findByRole("heading", { name: "Instagram" })).toBeInTheDocument();
+    view.rerender(<Channels repository={socialRepository} workspaceId={workspaceB} />);
+    expect(screen.queryByRole("heading", { name: "Instagram" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Não conectado")).not.toBeInTheDocument();
+    await act(async () => next.reject(new Error("offline")));
+    expect(screen.getByRole("alert")).toHaveTextContent("Não foi possível carregar");
+    expect(screen.queryByText("Não conectado")).not.toBeInTheDocument();
   });
 
   it("renderiza Instagram, Facebook e TikTok com estados reais", async () => {
@@ -617,19 +660,19 @@ describe("Channels", () => {
     expect(tiktokButton).toBeEnabled();
     await user.click(tiktokButton);
     expect(startMetaOAuth).not.toHaveBeenCalled();
-    expect(screen.getByRole("status")).toHaveTextContent(/integração TikTok não está habilitada/i);
+    expect(screen.getByRole("status")).toHaveTextContent("Conexão TikTok indisponível.");
   });
 
   it("identifica visualmente a integração futura sem criar uma conta TikTok", async () => {
     render(<Channels repository={repository()} workspaceId={workspaceA} />, { wrapper: Wrapper });
     const button = await screen.findByRole("button", { name: "Conectar TikTok" });
     expect(button).toBeEnabled();
-    expect(button).toHaveAccessibleDescription(/Integração em desenvolvimento/);
+    expect(button).toHaveAccessibleDescription("Conexão indisponível.");
     expect(button.querySelector("svg")).not.toBeNull();
     expect(screen.getByRole("heading", { name: "TikTok" })).toBeInTheDocument();
     expect(within(button.closest("article")!).getByText("Não conectado")).toBeInTheDocument();
     expect(button.closest("article")!.querySelector("img")).toBeNull();
-    expect(screen.getByText(/Avatar e nome de usuário indisponíveis/)).toBeInTheDocument();
+    expect(within(button.closest("article")!).getByText("Nenhum perfil conectado.")).toBeInTheDocument();
     expect(screen.getByText("Nenhuma conta conectada")).toBeInTheDocument();
   });
 

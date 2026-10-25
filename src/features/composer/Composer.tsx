@@ -11,6 +11,7 @@ import { useComposerDestinations } from "./useComposerDestinations";
 import { useComposerMedia } from "./useComposerMedia";
 import { TikTokLocalComposer } from "../tiktok/TikTokLocalComposer";
 import { useDialogFocus } from "../../components/useDialogFocus";
+import { ChannelBadge } from "../../components/ChannelBadge";
 
 type ComposerProps = {
   isLoadingPosts: boolean;
@@ -39,6 +40,8 @@ function ComposerContent({
 }: ComposerProps) {
   const dialogRef = useRef<HTMLFormElement>(null);
   const titleId = useId();
+  const tabsId = useId();
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   useDialogFocus(dialogRef, onClose);
   const [initialSchedule] = useState(() => {
     const nextHour = new Date();
@@ -57,6 +60,12 @@ function ComposerContent({
   const [failedPreviewSrc, setFailedPreviewSrc] = useState<string | null>(null);
   const [previewRetry, setPreviewRetry] = useState(0);
   const [tiktokSelected, setTikTokSelected] = useState(false);
+  const [activeTab, setActiveTab] = useState<"meta" | "tiktok">("meta");
+  const [tiktokFeedback, setTikTokFeedback] = useState(false);
+  const activateTab = (tab: "meta" | "tiktok") => {
+    setActiveTab(tab);
+    setTikTokFeedback(false);
+  };
 
   const changeCaption = (value: string) => {
     onDraftChange();
@@ -91,7 +100,6 @@ function ComposerContent({
     .flatMap(({ provider }) => provider === "facebook" || provider === "instagram" ? [provider] : []);
   const hasFacebook = selectedProviders.includes("facebook");
   const hasInstagram = selectedProviders.includes("instagram");
-  const tiktokOnly = tiktokSelected && selectedProviders.length === 0;
   const compatibility = selectedProviders.length > 0
     ? validatePublicationCompatibility({
       providers: selectedProviders, media: selectedMedia, caption: caption.trim(),
@@ -117,6 +125,10 @@ function ComposerContent({
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    if (activeTab === "tiktok") {
+      setTikTokFeedback(true);
+      return;
+    }
     if (cannotSubmit) {
       return;
     }
@@ -140,29 +152,50 @@ function ComposerContent({
           <div><span>NOVO CONTEÚDO</span><h2 id={titleId}>Criar publicação</h2></div>
           <button aria-label="Fechar" onClick={onClose} type="button">×</button>
         </div>
+        <div className="composer-destination-bar">
+          <ComposerDestinations destinations={destinations} onToggle={toggleDestination} />
+          <label className="composer-page composer-tiktok-destination"><input aria-label="TikTok" type="checkbox" checked={tiktokSelected} onChange={(event) => { onDraftChange(); setTikTokSelected(event.target.checked); }} /><ChannelBadge code="TT" small /><span><strong>TikTok</strong><small>Publicação indisponível</small></span></label>
+        </div>
+        <div className="composer-tabs" role="tablist" aria-label="Editar publicação">
+          {(["meta", "tiktok"] as const).map((tab, index) => <button
+            key={tab} ref={(element) => { tabRefs.current[index] = element; }}
+            type="button" role="tab" id={`${tabsId}-${tab}-tab`} aria-controls={`${tabsId}-${tab}-panel`}
+            aria-label={tab === "meta" ? "Facebook e Instagram" : "TikTok"}
+            aria-selected={activeTab === tab} tabIndex={activeTab === tab ? 0 : -1}
+            onClick={() => activateTab(tab)} onKeyDown={(event) => {
+              if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+              event.preventDefault();
+              const next = event.key === "Home" ? 0 : event.key === "End" ? 1 : 1 - index;
+              activateTab(next === 0 ? "meta" : "tiktok");
+              tabRefs.current[next]?.focus();
+            }}>
+            {tab === "meta" ? <><ChannelBadge code="FB" small /><ChannelBadge code="IG" small />Facebook e Instagram</> : <><ChannelBadge code="TT" small />TikTok</>}
+          </button>)}
+        </div>
+        <div className="composer-scroll">
+        <div role="tabpanel" id={`${tabsId}-meta-panel`} aria-labelledby={`${tabsId}-meta-tab`} hidden={activeTab !== "meta"}>
         <div className="composer-body">
           <div className="composer-fields">
-            {!tiktokOnly && <label className="field-label">Legenda<textarea aria-label="Legenda" value={caption} onChange={(event) => changeCaption(event.target.value)} placeholder="Conte a história por trás desta publicação..." maxLength={500} required /><small>{caption.length}/500 · Facebook / Instagram</small></label>}
-            <ComposerDestinations destinations={destinations} onToggle={toggleDestination} />
-            <fieldset className="composer-mode" disabled={!hasAccounts || tiktokOnly}>
+            <label className="field-label">Legenda<textarea aria-label="Legenda" value={caption} onChange={(event) => changeCaption(event.target.value)} placeholder="Conte a história por trás desta publicação..." maxLength={500} required={activeTab === "meta"} /><small>{caption.length}/500</small></label>
+            <fieldset className="composer-mode" disabled={!hasAccounts}>
               <legend>Publicação</legend>
               <label><input checked={publicationMode === "now"} onChange={() => changeMode("now")} name="publicationMode" type="radio" />Publicar agora</label>
               <label><input checked={publicationMode === "scheduled"} onChange={() => changeMode("scheduled")} name="publicationMode" type="radio" />Agendar</label>
             </fieldset>
-            {publicationMode === "scheduled" && !tiktokOnly ? <><div className="date-fields">
-              <label className="field-label">Data<input type="date" value={date} onChange={(event) => changeDate(event.target.value)} required /></label>
-              <label className="field-label">Horário<input type="time" value={time} onChange={(event) => changeTime(event.target.value)} required /></label>
+            {publicationMode === "scheduled" ? <><div className="date-fields">
+              <label className="field-label">Data<input type="date" value={date} onChange={(event) => changeDate(event.target.value)} required={activeTab === "meta"} /></label>
+              <label className="field-label">Horário<input type="time" value={time} onChange={(event) => changeTime(event.target.value)} required={activeTab === "meta"} /></label>
             </div>
             <div className="best-time"><span>✦</span><div><strong>Agendamento</strong><p>Escolha a data e o horário da publicação.</p></div></div></> : null}
-            {!tiktokOnly && <><p>Mídia Facebook / Instagram — biblioteca e envio Meta</p><ComposerMediaPicker media={media} repository={mediaAssetsRepository} /></>}
+            <ComposerMediaPicker media={media} repository={mediaAssetsRepository} />
             {mediaError ? <p className="composer-format-error" role="alert">{mediaError}</p> : null}
             {selectedMedia?.mediaType === "video" && selectedProviders.length > 0 ? <p role="status">
               O vídeo usa o formato Reel.{hasFacebook ? " Na Facebook Page, a audiência é pública." : ""}
               {" Orientação: H264/AAC, 9:16, 3–90 segundos e 24–60 FPS. O SocialFlow não verifica localmente codec, duração, FPS ou proporção; a aceitação do arquivo depende da Meta."}
             </p> : null}
           </div>
-          {!tiktokOnly && <div className="composer-preview">
-            <span>PRÉ-VISUALIZAÇÃO</span>
+          <div className="composer-preview">
+            <span>PRÉVIA DA PUBLICAÇÃO</span>
             <div className="social-preview">
               <div className="social-user"><div className="avatar tiny">SF</div><div><strong>Seu perfil</strong><span>Prévia ilustrativa</span></div><b>•••</b></div>
               <div className={`preview-canvas${media.preview ? " media-preview-canvas" : ""}`} data-testid="composer-main-preview">
@@ -177,10 +210,15 @@ function ComposerContent({
               <div className="social-actions">♡　⌁　➤ <span>▣</span></div>
               <p><strong>Seu perfil</strong> {caption || "Sua legenda aparecerá aqui..."}</p>
             </div>
-          </div>}
+          </div>
         </div>
-        <TikTokLocalComposer selected={tiktokSelected} onSelect={setTikTokSelected} metaSelected={selectedProviders.length > 0} onDraftChange={onDraftChange} />
+        </div>
+        <div role="tabpanel" id={`${tabsId}-tiktok-panel`} aria-labelledby={`${tabsId}-tiktok-tab`} hidden={activeTab !== "tiktok"}>
+          <TikTokLocalComposer selected={tiktokSelected} onDraftChange={onDraftChange} />
+        </div>
+        </div>
         <div className="modal-footer">
+          <div className="composer-action-target" aria-live="polite">{activeTab === "meta" ? "Facebook e Instagram" : tiktokFeedback ? <span role="status">Publicação TikTok indisponível.</span> : "TikTok"}</div>
           <button
             className="secondary-button"
             onClick={onClose}
@@ -188,7 +226,7 @@ function ComposerContent({
           >
             Fechar sem salvar
           </button>
-          <button
+          {activeTab === "tiktok" ? <button className="primary-button" type="button" aria-disabled="true" onClick={() => setTikTokFeedback(true)}>Publicar no TikTok</button> : <button
             aria-busy={isSubmitting}
             aria-label={publicationMode === "scheduled" ? "Agendar publicação" : "Publicar agora"}
             className="primary-button"
@@ -202,7 +240,7 @@ function ComposerContent({
                 : media.isUploadingMedia
                   ? "▦ Enviando mídia..."
                 : publicationMode === "scheduled" ? "▦ Agendar publicação" : "▦ Publicar agora"}
-          </button>
+          </button>}
         </div>
       </form>
     </div>

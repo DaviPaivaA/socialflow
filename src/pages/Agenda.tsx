@@ -28,8 +28,8 @@ function AgendaContent({ loadState, onCompose, posts, ...associations }: AgendaP
           <button className="primary-button" onClick={onCompose} type="button">＋ Novo conteúdo</button>
         </div>
       </div>
-      <div className="platform-controls"><label>Plataforma da agenda<select value={platform} onChange={(event) => setPlatform(event.target.value)}><option value="all">Todos</option><option value="facebook">Facebook</option><option value="instagram">Instagram</option><option value="tiktok">TikTok</option></select></label>{platform === "tiktok" && <ChannelBadge code="TT" />}</div>
-      {platform === "tiktok" ? <><p>Não conectado. Agendamento TikTok bloqueado; nenhuma publicação TikTok foi criada.</p><WeekCalendar posts={[]} today={today} /></> : loadState === "loading" ? (
+      <div className="platform-controls"><label>Plataforma da agenda<select value={platform} onChange={(event) => setPlatform(event.target.value)}><option value="all">Todos</option><option value="facebook">Facebook</option><option value="instagram">Instagram</option><option value="tiktok">TikTok</option></select></label>{platform !== "all" && <ChannelBadge code={platform === "facebook" ? "FB" : platform === "instagram" ? "IG" : "TT"} />}</div>
+      {platform === "tiktok" ? <><p>Nenhuma publicação agendada.</p><WeekCalendar posts={[]} today={today} /></> : loadState === "loading" ? (
         <p role="status">Carregando publicações</p>
       ) : loadState === "error" ? (
         <p role="alert">Não foi possível carregar a agenda deste Workspace.</p>

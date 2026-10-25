@@ -37,7 +37,7 @@ function useLocalResource(kind: FileKind, onDraftChange: () => void) {
       }
       next = { [localResourceBrand]: true, file, url, loading: true, error: null };
     } catch {
-      next = { [localResourceBrand]: true, file, url: null, loading: false, error: "Não foi possível criar a prévia local." };
+      next = { [localResourceBrand]: true, file, url: null, loading: false, error: "Não foi possível criar a prévia." };
     }
     current.current = next;
     setResource(next);
@@ -49,7 +49,7 @@ function useLocalResource(kind: FileKind, onDraftChange: () => void) {
     setResource(null);
     const error = !file.size ? "O arquivo está vazio."
       : !allowed[kind].includes(file.type) ? kind === "video" ? "Escolha um vídeo MP4 ou WebM." : "Escolha uma capa JPEG, PNG ou WebP."
-      : file.size > limits[kind] ? `O arquivo excede o limite local de segurança de ${kind === "video" ? 100 : 10} MiB.` : null;
+      : file.size > limits[kind] ? `O arquivo excede o limite de arquivo de ${kind === "video" ? 100 : 10} MiB.` : null;
     setValidationError(error);
     if (!error) open(file);
   };
@@ -62,7 +62,7 @@ function useLocalResource(kind: FileKind, onDraftChange: () => void) {
   };
   const settle = (source: LocalResource, failed: boolean) => {
     if (!active.current || current.current !== source) return;
-    const next = { ...source, loading: false, error: failed ? kind === "video" ? "Não foi possível reproduzir o vídeo local." : "Não foi possível exibir a capa local." : null };
+    const next = { ...source, loading: false, error: failed ? kind === "video" ? "Não foi possível reproduzir o vídeo." : "Não foi possível exibir a capa." : null };
     current.current = next; setResource(next);
   };
   return { resource, validationError, select, remove, retry, settle };
@@ -74,52 +74,50 @@ type LocalFileState = ReturnType<typeof useLocalResource>;
 export function TikTokVideoPreview({ video, poster, caption }: { video: LocalFileState; poster: LocalFileState; caption: string }) {
   const source = video.resource?.[localResourceBrand] ? video.resource : null;
   const cover = poster.resource?.[localResourceBrand] ? poster.resource : null;
-  return <section aria-label="Prévia TikTok local" className="tiktok-preview">
-    <h3 className="tiktok-preview-heading"><ChannelBadge code="TT" small />Prévia TikTok</h3>
+  return <section aria-label="Prévia da publicação TikTok" className="tiktok-preview">
+    <h3 className="tiktok-preview-heading"><ChannelBadge code="TT" small />Prévia da publicação</h3>
     <div className="tiktok-preview-frame">
       {source?.url && !source.error ? <video
         controls key={source.url} preload="metadata" src={source.url}
         poster={cover?.error ? undefined : cover?.url ?? undefined}
         onLoadedMetadata={() => video.settle(source, false)} onError={() => video.settle(source, true)}
-      /> : <p>{source?.error ? "Prévia indisponível" : "Escolha um vídeo local para visualizar."}</p>}
-      {source?.loading && <p className="tiktok-loading" role="status">Carregando vídeo local...</p>}
+      /> : <p>{source?.error ? "Prévia indisponível" : "Selecione um vídeo para visualizar."}</p>}
+      {source?.loading && <p className="tiktok-loading" role="status">Carregando vídeo...</p>}
     </div>
-    <p className="tiktok-caption">{caption || "Sua legenda TikTok local aparecerá aqui."}</p>
-    <small>Enquadramento 9:16 apenas na prévia: não converte o vídeo nem comprova requisitos do TikTok.</small>
+    <p className="tiktok-caption">{caption || "Sua legenda aparecerá aqui."}</p>
+    <small>Prévia em 9:16. O arquivo original não será alterado.</small>
   </section>;
 }
 
-function TikTokDraft({ onDraftChange }: { onDraftChange: () => void }) {
+function TikTokDraft({ onDraftChange, selected }: { onDraftChange: () => void; selected: boolean }) {
   const [caption, setCaption] = useState("");
   const video = useLocalResource("video", onDraftChange);
   const poster = useLocalResource("poster", onDraftChange);
   return <div className="tiktok-local-grid">
-    <div>
-      <label className="field-label">Vídeo TikTok local<input accept="video/mp4,video/webm" type="file" onChange={(event) => { video.select(event.target.files?.[0]); event.target.value = ""; }} /></label>
-      <small>MP4 / WebM · teto LOCAL de segurança: 100 MiB. Não é um limite oficial do TikTok.</small>
+    <fieldset className="tiktok-editor-fields" disabled={!selected}>
+      <legend className="tiktok-editor-heading">Vídeo e legenda</legend>
+      <span className="field-label">Vídeo</span>
+      <label className="tiktok-file-picker">Selecionar vídeo<input aria-label="Vídeo TikTok" accept="video/mp4,video/webm" type="file" onChange={(event) => { video.select(event.target.files?.[0]); event.target.value = ""; }} /></label>
+      <small>MP4 ou WebM · até 100 MiB por arquivo.</small>
       {video.resource && <><p className="tiktok-file-name">{video.resource.file.name}</p><button className="secondary-button" type="button" onClick={video.remove}>Remover vídeo TikTok</button></>}
       {video.validationError && <p role="alert">{video.validationError}</p>}
       {video.resource?.error && <><p role="alert">{video.resource.error}</p><button type="button" onClick={video.retry}>Tentar novamente vídeo TikTok</button></>}
-      <label className="field-label">Capa TikTok local (opcional)<input accept="image/jpeg,image/png,image/webp" type="file" onChange={(event) => { poster.select(event.target.files?.[0]); event.target.value = ""; }} /></label>
-      <small>JPEG / PNG / WebP · teto LOCAL de segurança: 10 MiB, não oficial.</small>
+      <span className="field-label">Capa <span className="tiktok-optional">(opcional)</span></span>
+      <label className="tiktok-file-picker">Selecionar capa<input aria-label="Capa TikTok" accept="image/jpeg,image/png,image/webp" type="file" onChange={(event) => { poster.select(event.target.files?.[0]); event.target.value = ""; }} /></label>
+      <small>JPEG, PNG ou WebP · até 10 MiB por arquivo.</small>
       {poster.resource && <><p className="tiktok-file-name">{poster.resource.file.name}</p><button className="secondary-button" type="button" onClick={poster.remove}>Remover capa TikTok</button></>}
       {poster.validationError && <p role="alert">{poster.validationError}</p>}
-      {poster.resource?.url && !poster.resource.error && <img className="tiktok-cover-check" alt="Capa TikTok local" key={poster.resource.url} src={poster.resource.url} onLoad={() => { if (poster.resource) poster.settle(poster.resource, false); }} onError={() => { if (poster.resource) poster.settle(poster.resource, true); }} />}
-      {poster.resource?.loading && <p role="status">Carregando capa local...</p>}
+      {poster.resource?.url && !poster.resource.error && <img className="tiktok-cover-check" alt="Capa TikTok" key={poster.resource.url} src={poster.resource.url} onLoad={() => { if (poster.resource) poster.settle(poster.resource, false); }} onError={() => { if (poster.resource) poster.settle(poster.resource, true); }} />}
+      {poster.resource?.loading && <p role="status">Carregando capa...</p>}
       {poster.resource?.error && <><p role="alert">{poster.resource.error}</p><button type="button" onClick={poster.retry}>Tentar novamente capa TikTok</button></>}
-      <label className="field-label">Legenda TikTok local<textarea aria-label="Legenda TikTok local" value={caption} onChange={(event) => { onDraftChange(); setCaption(event.target.value); }} /><small>{caption.length} caracteres · somente neste compositor</small></label>
-    </div>
+      <label className="field-label">Legenda<textarea aria-label="Legenda TikTok" value={caption} onChange={(event) => { onDraftChange(); setCaption(event.target.value); }} /><small>{caption.length} caracteres</small></label>
+    </fieldset>
     <TikTokVideoPreview video={video} poster={poster} caption={caption} />
   </div>;
 }
 
-export function TikTokLocalComposer({ metaSelected, onDraftChange, selected, onSelect }: { metaSelected: boolean; onDraftChange: () => void; selected: boolean; onSelect: (selected: boolean) => void }) {
-  return <section className="tiktok-local panel" aria-label="Compositor TikTok local">
-    <label className="tiktok-local-toggle"><input aria-label="TikTok — prévia local" type="checkbox" checked={selected} onChange={(event) => { onDraftChange(); onSelect(event.target.checked); }} /><ChannelBadge code="TT" small />TikTok — prévia local</label>
-    <p>Não conectado. Arquivos e legenda ficam somente em memória; fechar, desmarcar ou trocar de Workspace descarta esta prévia. Nada é salvo ou enviado ao TikTok.</p>
-    {selected && <>
-      <p className="tiktok-notice">{metaSelected ? "Somente Facebook e Instagram serão enviados, com a legenda e a mídia Meta. O rascunho TikTok não é publicado, agendado ou persistido, nem conta como sucesso TikTok." : "Publicação e agendamento TikTok bloqueados. Selecione um destino Meta e preencha sua legenda Meta para publicar; aqui é apenas uma prévia local."}</p>
-      <TikTokDraft onDraftChange={onDraftChange} />
-    </>}
+export function TikTokLocalComposer({ onDraftChange, selected }: { onDraftChange: () => void; selected: boolean }) {
+  return <section className="tiktok-local" aria-label="Editor TikTok">
+    <TikTokDraft key={selected ? "selected" : "unselected"} selected={selected} onDraftChange={onDraftChange} />
   </section>;
 }

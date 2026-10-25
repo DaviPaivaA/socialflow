@@ -59,7 +59,7 @@ describe("Agenda: associações Meta verificadas apenas sob filtro explícito", 
     await act(async () => reject(new HttpError(new Response(null, { status: 401 }), "/posts", null)));
     expect(input.onUnauthorized).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Plataforma da agenda")).toHaveValue("all");
-    select("tiktok"); expect(screen.getByText(/agendamento TikTok.*bloqueado/i)).toBeInTheDocument();
+    select("tiktok"); expect(screen.getByText("Nenhuma publicação agendada.")).toBeInTheDocument();
   });
 
   it("limita o custo do lookup e informa indisponibilidade sem assumir zero", async () => {

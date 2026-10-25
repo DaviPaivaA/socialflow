@@ -14,8 +14,8 @@ export function Analytics() {
           <label>Período de análise<select value={period} onChange={(event) => setPeriod(event.target.value)}><option value="7">7 dias</option><option value="30">30 dias</option><option value="90">90 dias</option></select></label>
         </div>
         <div className="section-heading"><ChannelBadge code={platform === "tiktok" ? "TT" : platform === "instagram" ? "IG" : "FB"} /><h2>{platform === "tiktok" ? "TikTok" : platform === "instagram" ? "Instagram" : "Facebook"}</h2></div>
-        <p>{platform === "tiktok" ? "Não conectado" : "Dados ainda indisponíveis"}</p>
-        <small>Seleção local dos últimos {period} dias. Nenhuma consulta de métricas é realizada.</small>
+        <p>{platform === "tiktok" ? "Não conectado" : "Métricas indisponíveis."}</p>
+        <small>Últimos {period} dias · Nenhuma consulta de métricas é realizada.</small>
       </section>
       <section className="metrics-grid">
         <MetricCard label="Impressões" value="—" change="Ainda indisponível" icon="◉" tone="purple" showSpark={false} />
@@ -28,12 +28,12 @@ export function Analytics() {
           <div className="section-heading">
             <div><span>EVOLUÇÃO</span><h2>Alcance por semana</h2></div>
           </div>
-          <p>Dados de análise ainda não disponíveis. Conecte seus canais e aguarde a sincronização das métricas.</p>
+          <p>Sem dados de alcance neste período.</p>
           <div className="empty-analytics-chart" aria-label="Gráfico sem dados"><span>Sem dados</span><small>Tempo · últimos {period} dias</small></div>
         </article>
         <article className="panel top-content">
           <div className="section-heading"><div><span>DESTAQUE</span><h2>Melhor conteúdo</h2></div></div>
-          <p>Dados de análise ainda não disponíveis. O conteúdo de destaque aparecerá após a sincronização das métricas.</p>
+          <p>Sem dados para destacar conteúdo.</p>
         </article>
       </section>
     </>

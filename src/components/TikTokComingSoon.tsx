@@ -8,6 +8,7 @@ export function TikTokComingSoon() {
     <div className="upcoming-channel">
       <button
         aria-describedby={descriptionId}
+        aria-disabled="true"
         aria-label="Conectar TikTok"
         className="secondary-button"
         onClick={() => setInformed(true)}
@@ -17,9 +18,9 @@ export function TikTokComingSoon() {
         <span>Conectar TikTok</span>
       </button>
       <p id={descriptionId}>
-        Integração em desenvolvimento. Conexão, publicação e métricas indisponíveis.
+        Conexão indisponível.
       </p>
-      {informed && <p role="status">A integração TikTok não está habilitada neste ambiente. Nenhuma conexão foi iniciada.</p>}
+      {informed && <p role="status">Conexão TikTok indisponível.</p>}
     </div>
   );
 }

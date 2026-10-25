@@ -1,5 +1,5 @@
 import type { ComposerDestinationsState } from "./useComposerDestinations";
-import { TikTokComingSoon } from "../../components/TikTokComingSoon";
+import { ChannelBadge } from "../../components/ChannelBadge";
 
 type ComposerDestinationsProps = {
   destinations: ComposerDestinationsState;
@@ -18,17 +18,18 @@ export function ComposerDestinations({ destinations, onToggle }: ComposerDestina
     {destinations.accounts.length > 0 ? <div className="composer-page-list">
       {destinations.accounts.map((page) => <label className="composer-page" key={page.id}>
         <input
+          aria-label={page.provider === "facebook" ? `Facebook — ${page.displayName}` : `Instagram — ${page.username ? `@${page.username}` : page.displayName}`}
           checked={destinations.selectedIds.includes(page.id)}
           onChange={() => onToggle(page.id)}
           type="checkbox"
         />
-        <span>{page.provider === "facebook" ? `Facebook — ${page.displayName}` : `Instagram — ${page.username ? `@${page.username}` : page.displayName}`}</span>
+        <ChannelBadge code={page.provider === "facebook" ? "FB" : "IG"} small />
+        <span><strong>{page.username && page.provider === "instagram" ? `@${page.username}` : page.displayName}</strong><small>{page.provider === "facebook" ? "Facebook" : "Instagram"}</small></span>
       </label>)}
     </div> : null}
     {!destinations.isLoading && destinations.unavailableSelectedIds.map((id) => <div className="composer-unavailable-selection" key={id}>
       <p>Conta selecionada indisponível — {id}. Remova a seleção ou reconecte em Canais.</p>
       <button type="button" onClick={() => onToggle(id)}>Remover conta {id}</button>
     </div>)}
-    <TikTokComingSoon />
   </section>;
 }
